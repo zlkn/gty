@@ -1,6 +1,6 @@
-// Command gty is a skeleton for a GPU terminal: a glfw window with a WebGPU
-// surface and nothing on it yet. The loop is event-driven rather than a game
-// loop so an idle terminal costs no CPU.
+// Command gty is a skeleton for a GPU terminal: a glfw window, a WebGPU surface
+// and one line of text drawn from a glyph atlas. The loop is event-driven rather
+// than a game loop so an idle terminal costs no CPU.
 package main
 
 import (
@@ -19,9 +19,23 @@ const (
 	initialWidth  = 900
 	initialHeight = 600
 	title         = "gty"
+	fontSize      = 16
+	padding       = 8
 )
 
-var background = wgpu.Color{R: 0.09, G: 0.10, B: 0.12, A: 1}
+var HELLO_WORLD = []string{
+	`!"#$%&'()*+,-./`,
+	`0123456789:;<=>?`,
+	`@ABCDEFGHIJKLMNO`,
+	`PQRSTUVWXYZ[\]^_`,
+	`abcdefghijklmno`,
+	`pqrstuvwxyz{|}~`,
+}
+
+var (
+	background = wgpu.Color{R: 0.09, G: 0.10, B: 0.12, A: 1}
+	foreground = [4]float32{0.85, 0.87, 0.91, 1}
+)
 
 func init() {
 	// glfw must talk to the window manager from the thread it was initialised on.
@@ -35,6 +49,7 @@ type app struct {
 	device   *wgpu.Device
 	queue    *wgpu.Queue
 	config   *wgpu.SurfaceConfiguration
+	text     *text
 
 	// Atomic because the PTY reader will eventually set it from its own
 	// goroutine; see Damage.
@@ -100,6 +115,12 @@ func newApp() (*app, error) {
 		AlphaMode:   caps.AlphaModes[0],
 	}
 	a.surface.Configure(a.device, a.config)
+
+	if a.text, err = newText(a.device, a.queue, a.config.Format, fontSize); err != nil {
+		a.release()
+		return nil, fmt.Errorf("text renderer: %w", err)
+	}
+	a.text.Set(HELLO_WORLD, padding, foreground)
 
 	window.SetFramebufferSizeCallback(func(_ *glfw.Window, width, height int) {
 		a.resize(width, height)
@@ -188,6 +209,7 @@ func (a *app) render() error {
 			ClearValue: background,
 		}},
 	})
+	a.text.Draw(pass, a.config.Width, a.config.Height)
 	pass.End()
 	pass.Release()
 
@@ -216,6 +238,7 @@ func ignoreTransient(err error) error {
 }
 
 func (a *app) release() {
+	a.text.release()
 	if a.queue != nil {
 		a.queue.Release()
 	}
