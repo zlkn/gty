@@ -13,8 +13,8 @@ import (
 // texture, and reads it back so the result can be looked at.
 func TestRenderToPNG(t *testing.T) {
 	const (
-		width  = 320 // 320*4 = 1280 bytes/row, a multiple of the required 256
-		height = 176
+		width  = 576 // 320*4 = 1280 bytes/row, a multiple of the required 256
+		height = 200
 		format = wgpu.TextureFormatRGBA8Unorm
 	)
 

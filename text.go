@@ -2,31 +2,20 @@ package main
 
 import (
 	_ "embed"
-	"fmt"
-	"image"
-	"image/draw"
 	"unsafe"
 
 	"github.com/oliverbestmann/webgpu/wgpu"
-	"golang.org/x/image/font"
-	"golang.org/x/image/font/opentype"
-	"golang.org/x/image/font/sfnt"
-	"golang.org/x/image/math/fixed"
+
+	"gty/internal/font"
 )
 
 //go:embed text.wgsl
 var textShader string
 
-//go:embed assets/JetBrainsMono.ttf
+//go:embed assets/JetBrainsMono-Regular.ttf
 var fontTTF []byte
 
-const (
-	firstRune    = ' '
-	lastRune     = '~'
-	atlasCols    = 16
-	slotPad      = 2
-	maxInstances = 1 << 14
-)
+const maxInstances = 1 << 14
 
 // instance is one glyph quad. Layout must match the @location bindings in text.wgsl.
 type instance struct {
@@ -35,21 +24,9 @@ type instance struct {
 	color [4]float32
 }
 
-type glyph struct {
-	u0, v0, u1, v1 float32
-	w, h           float32
-	offX, offY     float32 // ink origin relative to the pen, on the baseline
-}
-
-type atlas struct {
-	img           *image.Alpha
-	glyphs        []glyph
-	cellW, cellH  float32
-	ascent        float32
-}
-
 type text struct {
 	queue *wgpu.Queue
+	fm    *font.FontManager
 
 	pipeline  *wgpu.RenderPipeline
 	bindGroup *wgpu.BindGroup
@@ -59,77 +36,11 @@ type text struct {
 	view      *wgpu.TextureView
 	sampler   *wgpu.Sampler
 
-	atlas     *atlas
 	instances []instance
+	gids      []font.GID // scratch, reused across rows
 }
 
-// bake rasterises the printable ASCII range into a single alpha texture.
-//
-// This is the throwaway half: it addresses glyphs by rune, so it cannot reach
-// ligatures or anything GSUB substitutes. Swapping it for a GID-keyed baker on
-// go-text/typesetting changes nothing above this function.
-func bake(ttf []byte, sizePx float64) (*atlas, error) {
-	sf, err := sfnt.Parse(ttf)
-	if err != nil {
-		return nil, fmt.Errorf("parse font: %w", err)
-	}
-	face, err := opentype.NewFace(sf, &opentype.FaceOptions{
-		Size:    sizePx,
-		DPI:     72, // size in points == size in pixels
-		Hinting: font.HintingFull,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("new face: %w", err)
-	}
-	defer face.Close()
-
-	metrics := face.Metrics()
-	ascent, descent := metrics.Ascent.Ceil(), metrics.Descent.Ceil()
-	advance, ok := face.GlyphAdvance('M')
-	if !ok {
-		return nil, fmt.Errorf("font has no 'M' to measure the cell with")
-	}
-	cellW, cellH := advance.Ceil(), ascent+descent
-
-	count := int(lastRune-firstRune) + 1
-	rows := (count + atlasCols - 1) / atlasCols
-	slotW, slotH := cellW+2*slotPad, cellH+2*slotPad
-
-	// R8 data is uploaded at bytesPerRow == width, which wgpu wants 256-aligned;
-	// the spare columns on the right stay empty.
-	width := (atlasCols*slotW + 255) &^ 255
-	img := image.NewAlpha(image.Rect(0, 0, width, rows*slotH))
-
-	glyphs := make([]glyph, count)
-	fw, fh := float32(img.Rect.Dx()), float32(img.Rect.Dy())
-	for i := range glyphs {
-		penX := (i%atlasCols)*slotW + slotPad
-		penY := (i/atlasCols)*slotH + slotPad + ascent
-		dr, mask, maskp, _, ok := face.Glyph(fixed.P(penX, penY), rune(firstRune+i))
-		if !ok || dr.Empty() {
-			continue // space, and anything the font lacks
-		}
-		draw.DrawMask(img, dr, image.Opaque, image.Point{}, mask, maskp, draw.Src)
-		glyphs[i] = glyph{
-			u0: float32(dr.Min.X) / fw, v0: float32(dr.Min.Y) / fh,
-			u1: float32(dr.Max.X) / fw, v1: float32(dr.Max.Y) / fh,
-			w:    float32(dr.Dx()),
-			h:    float32(dr.Dy()),
-			offX: float32(dr.Min.X - penX),
-			offY: float32(dr.Min.Y - penY),
-		}
-	}
-
-	return &atlas{
-		img:    img,
-		glyphs: glyphs,
-		cellW:  float32(cellW),
-		cellH:  float32(cellH),
-		ascent: float32(ascent),
-	}, nil
-}
-
-func newText(device *wgpu.Device, queue *wgpu.Queue, format wgpu.TextureFormat, sizePx float64) (t *text, err error) {
+func newText(device *wgpu.Device, queue *wgpu.Queue, format wgpu.TextureFormat, sizePt float64) (t *text, err error) {
 	defer func() {
 		if err != nil {
 			t.release()
@@ -137,15 +48,16 @@ func newText(device *wgpu.Device, queue *wgpu.Queue, format wgpu.TextureFormat, 
 		}
 	}()
 
-	a, err := bake(fontTTF, sizePx)
+	fm, err := font.NewManager(fontTTF, "JetBrains Mono", sizePt, 72)
 	if err != nil {
 		return nil, err
 	}
-	t = &text{queue: queue, atlas: a}
+	t = &text{queue: queue, fm: fm}
+	img := fm.Atlas.Img
 
 	extent := wgpu.Extent3D{
-		Width:              uint32(a.img.Rect.Dx()),
-		Height:             uint32(a.img.Rect.Dy()),
+		Width:              uint32(img.Rect.Dx()),
+		Height:             uint32(img.Rect.Dy()),
 		DepthOrArrayLayers: 1,
 	}
 	t.texture, err = device.TryCreateTexture(&wgpu.TextureDescriptor{
@@ -162,8 +74,8 @@ func newText(device *wgpu.Device, queue *wgpu.Queue, format wgpu.TextureFormat, 
 	}
 	if err = queue.TryWriteTexture(
 		t.texture.AsImageCopy(),
-		a.img.Pix,
-		&wgpu.TexelCopyBufferLayout{BytesPerRow: uint32(a.img.Stride), RowsPerImage: wgpu.CopyStrideUndefined},
+		img.Pix,
+		&wgpu.TexelCopyBufferLayout{BytesPerRow: uint32(img.Stride), RowsPerImage: wgpu.CopyStrideUndefined},
 		&extent,
 	); err != nil {
 		return t, err
@@ -175,14 +87,14 @@ func newText(device *wgpu.Device, queue *wgpu.Queue, format wgpu.TextureFormat, 
 	// Nearest, not linear: the atlas is rasterised at the exact display size, so
 	// filtering would only smear it.
 	if t.sampler, err = device.TryCreateSampler(&wgpu.SamplerDescriptor{
-		Label:        "Glyph Sampler",
-		AddressModeU: wgpu.AddressModeClampToEdge,
-		AddressModeV: wgpu.AddressModeClampToEdge,
-		AddressModeW: wgpu.AddressModeClampToEdge,
-		MagFilter:    wgpu.FilterModeNearest,
-		MinFilter:    wgpu.FilterModeNearest,
-		MipmapFilter: wgpu.MipmapFilterModeNearest,
-		LodMaxClamp:  1,
+		Label:         "Glyph Sampler",
+		AddressModeU:  wgpu.AddressModeClampToEdge,
+		AddressModeV:  wgpu.AddressModeClampToEdge,
+		AddressModeW:  wgpu.AddressModeClampToEdge,
+		MagFilter:     wgpu.FilterModeNearest,
+		MinFilter:     wgpu.FilterModeNearest,
+		MipmapFilter:  wgpu.MipmapFilterModeNearest,
+		LodMaxClamp:   1,
 		MaxAnisotropy: 1,
 	}); err != nil {
 		return t, err
@@ -276,26 +188,41 @@ func newText(device *wgpu.Device, queue *wgpu.Queue, format wgpu.TextureFormat, 
 
 // Set lays text out on the cell grid, anchored at the top-left with padPx inset.
 // One element of lines is one row; newlines inside an element are not handled.
+//
+// Every cell gets a slot-sized quad offset back by the atlas padding, so a
+// ligature glyph that reaches over its neighbours lands where the font drew it.
+// Cell origins still step by CellWidth — calt in this font is monospace
+// preserving, one glyph per cell.
 func (t *text) Set(lines []string, padPx float32, colour [4]float32) {
 	t.instances = t.instances[:0]
+	a := t.fm.Atlas
+	slotW, slotH := float32(a.SlotW), float32(a.SlotH)
+	atlasW, atlasH := float32(a.Img.Rect.Dx()), float32(a.Img.Rect.Dy())
+	cellW, cellH := float32(t.fm.CellWidth), float32(t.fm.CellHeight)
+
 	for row, line := range lines {
-		baseline := padPx + float32(row)*t.atlas.cellH + t.atlas.ascent
-		col := 0
-		for _, r := range line {
-			// Advance per rune, not per byte: range over a string yields byte
-			// offsets, which stop matching cells as soon as text is non-ASCII.
-			penX := padPx + float32(col)*t.atlas.cellW
-			col++
-			if r < firstRune || r > lastRune {
-				continue
+		runes := []rune(line)
+		gids, ok := t.fm.Shaper.ShapeRow(t.gids[:0], runes, true)
+		if !ok {
+			// The font broke one-glyph-per-cell for this row; a per-cell renderer
+			// cannot draw that, so fall back to plain cmap and lose the ligatures.
+			gids = gids[:0]
+			for _, r := range runes {
+				gid, _ := t.fm.GlyphIndex(r)
+				gids = append(gids, gid)
 			}
-			g := t.atlas.glyphs[r-firstRune]
-			if g.w == 0 {
+		}
+		t.gids = gids
+
+		y := padPx + float32(row)*cellH - float32(a.PadTop)
+		for col, gid := range gids {
+			u, v, ok := a.GlyphUV(gid)
+			if !ok {
 				continue
 			}
 			t.instances = append(t.instances, instance{
-				rect:  [4]float32{penX + g.offX, baseline + g.offY, g.w, g.h},
-				uv:    [4]float32{g.u0, g.v0, g.u1, g.v1},
+				rect:  [4]float32{padPx + float32(col)*cellW - float32(a.PadLeft), y, slotW, slotH},
+				uv:    [4]float32{u, v, u + slotW/atlasW, v + slotH/atlasH},
 				color: colour,
 			})
 		}
@@ -344,4 +271,8 @@ func (t *text) release() {
 	if t.texture != nil {
 		t.texture.Release()
 	}
+	if t.fm != nil {
+		t.fm.Close()
+	}
 }
+
