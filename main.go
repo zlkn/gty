@@ -19,17 +19,16 @@ const (
 	initialWidth  = 900
 	initialHeight = 600
 	title         = "gty"
-	fontSize      = 16
+	fontSize      = 24
 	padding       = 8
 )
 
 var HELLO_WORLD = []string{
-	`!"#$%&'()*+,-./`,
-	`0123456789:;<=>?`,
-	`@ABCDEFGHIJKLMNO`,
-	`PQRSTUVWXYZ[\]^_`,
-	`abcdefghijklmno`,
-	`pqrstuvwxyz{|}~`,
+	`hello, world`,
+	``,
+	`!= == === -> <- => <=> |> ?? ::`,
+	`/* */ // <!-- --> www ... =~ &&`,
+	`func f[T any](x T) T { return x }`,
 }
 
 var (
