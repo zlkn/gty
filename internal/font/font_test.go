@@ -23,11 +23,16 @@ const (
 func newTestManager(t *testing.T) *FontManager {
 	t.Helper()
 
-	ttf, err := os.ReadFile("../../assets/JetBrainsMono-Regular.ttf")
-	if err != nil {
-		t.Fatal(err)
+	var faces [NumStyles][]byte
+	for i := range NumStyles {
+		style := Style(i)
+		ttf, err := os.ReadFile("../../assets/JetBrainsMono-" + style.String() + ".ttf")
+		if err != nil {
+			t.Fatal(err)
+		}
+		faces[style] = ttf
 	}
-	fm, err := NewManager(ttf, "Monospace", testSize, testDPI)
+	fm, err := NewManager(faces, "Monospace", testSize, testDPI)
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}
@@ -51,7 +56,7 @@ func TestNewManagerMetrics(t *testing.T) {
 	if fm.Ascent <= 0 || fm.Ascent > fm.CellHeight {
 		t.Errorf("baseline at y=%d lies outside the %d px cell", fm.Ascent, fm.CellHeight)
 	}
-	if fm.Atlas == nil || fm.Shaper == nil {
+	if fm.Atlas == nil || fm.Shaper(Regular) == nil {
 		t.Error("NewManager must bake the atlas and build the shaper eagerly")
 	}
 }
@@ -61,11 +66,11 @@ func TestCellWidthMatchesAdvance(t *testing.T) {
 
 	var buf sfnt.Buffer
 	advance := func(r rune) (fixed.Int26_6, bool) {
-		gid, err := fm.Font.GlyphIndex(&buf, r)
+		gid, err := fm.Font(Regular).GlyphIndex(&buf, r)
 		if err != nil || gid == 0 {
 			return 0, false
 		}
-		adv, err := fm.Font.GlyphAdvance(&buf, gid, fm.PPEM, Hinting)
+		adv, err := fm.Font(Regular).GlyphAdvance(&buf, gid, fm.PPEM, Hinting)
 		if err != nil {
 			return 0, false
 		}
@@ -111,12 +116,12 @@ func TestASCIIInkFitsCell(t *testing.T) {
 	var buf sfnt.Buffer
 	var bleeders []rune
 	for r := rune(FirstASCII); r <= LastASCII; r++ {
-		gid, ok := fm.GlyphIndex(r)
+		gid, ok := fm.GlyphIndex(Regular, r)
 		if !ok {
 			t.Errorf("rune %q: no glyph", r)
 			continue
 		}
-		bounds, _, err := fm.Font.GlyphBounds(&buf, gid, fm.PPEM, Hinting)
+		bounds, _, err := fm.Font(Regular).GlyphBounds(&buf, gid, fm.PPEM, Hinting)
 		if err != nil || bounds.Empty() {
 			continue // blank glyph, e.g. space
 		}

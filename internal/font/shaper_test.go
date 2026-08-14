@@ -24,7 +24,7 @@ func TestOneGlyphPerCell(t *testing.T) {
 	var gids []GID
 	for _, line := range corpus {
 		runes := []rune(line)
-		gids, ok := fm.Shaper.ShapeRow(gids[:0], runes, true)
+		gids, ok := fm.Shaper(Regular).ShapeRow(gids[:0], runes, true)
 		if !ok {
 			t.Errorf("%q broke the one-glyph-per-cell contract", line)
 			continue
@@ -36,7 +36,7 @@ func TestOneGlyphPerCell(t *testing.T) {
 		// A glyph the shaper can emit but the atlas never baked renders as a
 		// hole on screen. This is the safety net on the GSUB walk in GlyphSet.
 		for i, gid := range gids {
-			if _, baked := fm.Atlas.Slot(gid); !baked {
+			if _, baked := fm.Atlas.Slot(Key{Regular, gid}); !baked {
 				t.Errorf("%q cell %d (%q): glyph %d is not in the atlas", line, i, runes[i], gid)
 			}
 		}
@@ -48,20 +48,20 @@ func TestOneGlyphPerCell(t *testing.T) {
 func TestLigatureShape(t *testing.T) {
 	fm := newTestManager(t)
 
-	gids, ok := fm.Shaper.ShapeRow(nil, []rune("=>"), true)
+	gids, ok := fm.Shaper(Regular).ShapeRow(nil, []rune("=>"), true)
 	if !ok || len(gids) != 2 {
 		t.Fatalf(`"=>" shaped into %v (ok=%v), want 2 glyphs`, gids, ok)
 	}
 
-	plainEq, _ := fm.GlyphIndex('=')
+	plainEq, _ := fm.GlyphIndex(Regular, '=')
 	if gids[0] == plainEq {
 		t.Errorf(`"=>" was not substituted: first cell is still the plain '=' (glyph %d)`, plainEq)
 	}
 
-	if _, inked := slotInk(t, fm.Atlas, gids[0]); inked {
+	if _, inked := slotInk(t, fm.Atlas, Key{Regular, gids[0]}); inked {
 		t.Errorf("first cell (glyph %d) carries ink, want a blank spacer", gids[0])
 	}
-	box, inked := slotInk(t, fm.Atlas, gids[1])
+	box, inked := slotInk(t, fm.Atlas, Key{Regular, gids[1]})
 	if !inked {
 		t.Fatalf("second cell (glyph %d) is blank, the ligature is missing", gids[1])
 	}
@@ -82,13 +82,13 @@ func TestLigatureShape(t *testing.T) {
 func TestLigaturesDisabled(t *testing.T) {
 	fm := newTestManager(t)
 
-	gids, ok := fm.Shaper.ShapeRow(nil, []rune("=>"), false)
+	gids, ok := fm.Shaper(Regular).ShapeRow(nil, []rune("=>"), false)
 	if !ok || len(gids) != 2 {
 		t.Fatalf(`"=>" shaped into %v (ok=%v), want 2 glyphs`, gids, ok)
 	}
 
-	wantEq, _ := fm.GlyphIndex('=')
-	wantGt, _ := fm.GlyphIndex('>')
+	wantEq, _ := fm.GlyphIndex(Regular, '=')
+	wantGt, _ := fm.GlyphIndex(Regular, '>')
 	if gids[0] != wantEq || gids[1] != wantGt {
 		t.Errorf("got glyphs %v, want the plain %v — calt was not disabled", gids, []GID{wantEq, wantGt})
 	}
@@ -99,11 +99,11 @@ func TestLigaturesDisabled(t *testing.T) {
 func TestShapeRowAppends(t *testing.T) {
 	fm := newTestManager(t)
 
-	first, ok := fm.Shaper.ShapeRow(nil, []rune("ab"), true)
+	first, ok := fm.Shaper(Regular).ShapeRow(nil, []rune("ab"), true)
 	if !ok {
 		t.Fatal("shaping \"ab\" failed")
 	}
-	both, ok := fm.Shaper.ShapeRow(first, []rune("cd"), true)
+	both, ok := fm.Shaper(Regular).ShapeRow(first, []rune("cd"), true)
 	if !ok {
 		t.Fatal("shaping \"cd\" failed")
 	}
@@ -111,7 +111,7 @@ func TestShapeRowAppends(t *testing.T) {
 		t.Fatalf("got %d glyphs after two appends, want 4", len(both))
 	}
 
-	want, _ := fm.Shaper.ShapeRow(nil, []rune("abcd"), true)
+	want, _ := fm.Shaper(Regular).ShapeRow(nil, []rune("abcd"), true)
 	for i := range both {
 		if both[i] != want[i] {
 			t.Errorf("glyph %d: %d, want %d", i, both[i], want[i])
@@ -126,11 +126,11 @@ func TestRenderRowComposesLigature(t *testing.T) {
 	fm := newTestManager(t)
 	a := fm.Atlas
 
-	gids, ok := fm.Shaper.ShapeRow(nil, []rune("=>"), true)
+	gids, ok := fm.Shaper(Regular).ShapeRow(nil, []rune("=>"), true)
 	if !ok {
 		t.Fatal(`shaping "=>" failed`)
 	}
-	row := a.RenderRow(gids, fm.CellWidth)
+	row := a.RenderRow(keysOf(gids), fm.CellWidth)
 
 	box, inked := inkBox(row, row.Bounds())
 	if !inked {
@@ -162,4 +162,13 @@ func TestRenderRowComposesLigature(t *testing.T) {
 			t.Log(line.String())
 		}
 	}
+}
+
+// keysOf tags a shaped row with the style it was shaped in.
+func keysOf(gids []GID) []Key {
+	keys := make([]Key, len(gids))
+	for i, gid := range gids {
+		keys[i] = Key{Regular, gid}
+	}
+	return keys
 }

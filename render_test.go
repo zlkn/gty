@@ -14,7 +14,7 @@ import (
 func TestRenderToPNG(t *testing.T) {
 	const (
 		width  = 576 // 320*4 = 1280 bytes/row, a multiple of the required 256
-		height = 200
+		height = 680
 		format = wgpu.TextureFormatRGBA8Unorm
 	)
 
@@ -39,8 +39,11 @@ func TestRenderToPNG(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer txt.release()
-	txt.Set(HELLO_WORLD, padding, foreground)
-	t.Logf("instances: %d", len(txt.instances))
+	txt.Set(sample(), padding)
+	a := txt.fm.Atlas
+	t.Logf("instances: %d | atlas %dx%d = %d KiB | glyphs %d | slot %dx%d",
+		len(txt.instances), a.Img.Rect.Dx(), a.Img.Rect.Dy(), len(a.Img.Pix)/1024,
+		len(a.Glyphs()), a.SlotW, a.SlotH)
 
 	extent := wgpu.Extent3D{Width: width, Height: height, DepthOrArrayLayers: 1}
 	target, err := device.TryCreateTexture(&wgpu.TextureDescriptor{

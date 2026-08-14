@@ -13,27 +13,42 @@ import (
 	"github.com/go-gl/glfw/v3.4/glfw"
 	"github.com/oliverbestmann/webgpu/wgpu"
 	"github.com/oliverbestmann/webgpu/wgpuglfw"
+
+	"gty/internal/font"
 )
 
 const (
 	initialWidth  = 900
 	initialHeight = 600
 	title         = "gty"
-	fontSize      = 24
+	fontSize      = 16
 	padding       = 8
 )
 
 var HELLO_WORLD = []string{
 	`hello, world`,
-	``,
 	`!= == === -> <- => <=> |> ?? ::`,
-	`/* */ // <!-- --> www ... =~ &&`,
 	`func f[T any](x T) T { return x }`,
+}
+
+// sample repeats HELLO_WORLD once per style so all four can be compared at a
+// glance, each block under a label drawn in Regular.
+func sample() []line {
+	var out []line
+	for _, style := range []font.Style{font.Regular, font.Bold, font.Italic, font.BoldItalic} {
+		out = append(out, line{Text: style.String() + ":", Style: font.Regular, Color: label})
+		for _, txt := range HELLO_WORLD {
+			out = append(out, line{Text: txt, Style: style, Color: foreground})
+		}
+		out = append(out, line{})
+	}
+	return out
 }
 
 var (
 	background = wgpu.Color{R: 0.09, G: 0.10, B: 0.12, A: 1}
 	foreground = [4]float32{0.85, 0.87, 0.91, 1}
+	label      = [4]float32{0.45, 0.62, 0.81, 1}
 )
 
 func init() {
@@ -119,7 +134,7 @@ func newApp() (*app, error) {
 		a.release()
 		return nil, fmt.Errorf("text renderer: %w", err)
 	}
-	a.text.Set(HELLO_WORLD, padding, foreground)
+	a.text.Set(sample(), padding)
 
 	window.SetFramebufferSizeCallback(func(_ *glfw.Window, width, height int) {
 		a.resize(width, height)

@@ -12,8 +12,18 @@ import (
 //go:embed text.wgsl
 var textShader string
 
-//go:embed assets/JetBrainsMono-Regular.ttf
-var fontTTF []byte
+// Only the four faces a terminal needs are embedded; assets/ holds the whole
+// family, and the NL ("no ligatures") variants must not be used here.
+var (
+	//go:embed assets/JetBrainsMono-Regular.ttf
+	regularTTF []byte
+	//go:embed assets/JetBrainsMono-Bold.ttf
+	boldTTF []byte
+	//go:embed assets/JetBrainsMono-Italic.ttf
+	italicTTF []byte
+	//go:embed assets/JetBrainsMono-BoldItalic.ttf
+	boldItalicTTF []byte
+)
 
 const maxInstances = 1 << 14
 
@@ -48,7 +58,13 @@ func newText(device *wgpu.Device, queue *wgpu.Queue, format wgpu.TextureFormat, 
 		}
 	}()
 
-	fm, err := font.NewManager(fontTTF, "JetBrains Mono", sizePt, 72)
+	faces := [font.NumStyles][]byte{
+		font.Regular:    regularTTF,
+		font.Bold:       boldTTF,
+		font.Italic:     italicTTF,
+		font.BoldItalic: boldItalicTTF,
+	}
+	fm, err := font.NewManager(faces, "JetBrains Mono", sizePt, 72)
 	if err != nil {
 		return nil, err
 	}
@@ -186,29 +202,36 @@ func newText(device *wgpu.Device, queue *wgpu.Queue, format wgpu.TextureFormat, 
 	return t, nil
 }
 
-// Set lays text out on the cell grid, anchored at the top-left with padPx inset.
-// One element of lines is one row; newlines inside an element are not handled.
+// line is one row of the grid, drawn in a single style and colour.
+type line struct {
+	Text  string
+	Style font.Style
+	Color [4]float32
+}
+
+// Set lays lines out on the cell grid, anchored at the top-left with padPx
+// inset. Newlines inside a line's text are not handled.
 //
 // Every cell gets a slot-sized quad offset back by the atlas padding, so a
 // ligature glyph that reaches over its neighbours lands where the font drew it.
 // Cell origins still step by CellWidth — calt in this font is monospace
 // preserving, one glyph per cell.
-func (t *text) Set(lines []string, padPx float32, colour [4]float32) {
+func (t *text) Set(lines []line, padPx float32) {
 	t.instances = t.instances[:0]
 	a := t.fm.Atlas
 	slotW, slotH := float32(a.SlotW), float32(a.SlotH)
 	atlasW, atlasH := float32(a.Img.Rect.Dx()), float32(a.Img.Rect.Dy())
 	cellW, cellH := float32(t.fm.CellWidth), float32(t.fm.CellHeight)
 
-	for row, line := range lines {
-		runes := []rune(line)
-		gids, ok := t.fm.Shaper.ShapeRow(t.gids[:0], runes, true)
+	for row, ln := range lines {
+		runes := []rune(ln.Text)
+		gids, ok := t.fm.Shaper(ln.Style).ShapeRow(t.gids[:0], runes, true)
 		if !ok {
 			// The font broke one-glyph-per-cell for this row; a per-cell renderer
 			// cannot draw that, so fall back to plain cmap and lose the ligatures.
 			gids = gids[:0]
 			for _, r := range runes {
-				gid, _ := t.fm.GlyphIndex(r)
+				gid, _ := t.fm.GlyphIndex(ln.Style, r)
 				gids = append(gids, gid)
 			}
 		}
@@ -216,14 +239,14 @@ func (t *text) Set(lines []string, padPx float32, colour [4]float32) {
 
 		y := padPx + float32(row)*cellH - float32(a.PadTop)
 		for col, gid := range gids {
-			u, v, ok := a.GlyphUV(gid)
+			u, v, ok := a.GlyphUV(font.Key{Style: ln.Style, GID: gid})
 			if !ok {
 				continue
 			}
 			t.instances = append(t.instances, instance{
 				rect:  [4]float32{padPx + float32(col)*cellW - float32(a.PadLeft), y, slotW, slotH},
 				uv:    [4]float32{u, v, u + slotW/atlasW, v + slotH/atlasH},
-				color: colour,
+				color: ln.Color,
 			})
 		}
 	}

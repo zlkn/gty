@@ -30,13 +30,13 @@ func inkBox(img *image.Alpha, region image.Rectangle) (image.Rectangle, bool) {
 	return image.Rect(minX, minY, maxX+1, maxY+1), true
 }
 
-// slotInk is gid's ink box in slot coordinates, where (0,0) is the slot's
+// slotInk is the key's ink box in slot coordinates, where (0,0) is the slot's
 // top-left and the cell origin sits at (PadLeft, PadTop).
-func slotInk(t *testing.T, a *Atlas, gid GID) (image.Rectangle, bool) {
+func slotInk(t *testing.T, a *Atlas, k Key) (image.Rectangle, bool) {
 	t.Helper()
-	slot, ok := a.Slot(gid)
+	slot, ok := a.Slot(k)
 	if !ok {
-		t.Fatalf("glyph %d was not baked", gid)
+		t.Fatalf("%s glyph %d was not baked", k.Style, k.GID)
 	}
 	box, inked := inkBox(a.Img, slot)
 	return box.Sub(slot.Min), inked
@@ -111,12 +111,12 @@ func TestEveryASCIIGlyphIsBaked(t *testing.T) {
 	fm := newTestManager(t)
 
 	for r := rune(FirstASCII); r <= LastASCII; r++ {
-		gid, ok := fm.GlyphIndex(r)
+		gid, ok := fm.GlyphIndex(Regular, r)
 		if !ok {
 			t.Errorf("rune %q: no glyph", r)
 			continue
 		}
-		box, inked := slotInk(t, fm.Atlas, gid)
+		box, inked := slotInk(t, fm.Atlas, Key{Regular, gid})
 		if r == ' ' {
 			if inked {
 				t.Errorf("the space carries ink at %v", box)
@@ -137,12 +137,12 @@ func TestSharedBaseline(t *testing.T) {
 	want := fm.Atlas.PadTop + fm.Ascent // exclusive bottom of the ink box
 
 	for _, r := range "HELTIZnxm" {
-		gid, ok := fm.GlyphIndex(r)
+		gid, ok := fm.GlyphIndex(Regular, r)
 		if !ok {
 			t.Errorf("rune %q: no glyph", r)
 			continue
 		}
-		box, inked := slotInk(t, fm.Atlas, gid)
+		box, inked := slotInk(t, fm.Atlas, Key{Regular, gid})
 		if !inked {
 			t.Errorf("rune %q baked blank", r)
 			continue
@@ -196,28 +196,28 @@ func TestGlyphUVRoundTrip(t *testing.T) {
 	a := fm.Atlas
 	w, h := float32(a.Img.Rect.Dx()), float32(a.Img.Rect.Dy())
 
-	for _, gid := range a.Glyphs() {
-		u, v, ok := a.GlyphUV(gid)
+	for _, k := range a.Glyphs() {
+		u, v, ok := a.GlyphUV(k)
 		if !ok {
-			t.Errorf("glyph %d: GlyphUV reports a miss for a baked glyph", gid)
+			t.Errorf("%s glyph %d: GlyphUV reports a miss for a baked glyph", k.Style, k.GID)
 			continue
 		}
-		slot, _ := a.Slot(gid)
+		slot, _ := a.Slot(k)
 		if got := image.Pt(int(u*w+0.5), int(v*h+0.5)); got != slot.Min {
-			t.Errorf("glyph %d: UV %v,%v -> %v, want slot origin %v", gid, u, v, got, slot.Min)
+			t.Errorf("%s glyph %d: UV %v,%v -> %v, want slot origin %v", k.Style, k.GID, u, v, got, slot.Min)
 		}
 	}
 
 	// Not simply NumGlyphs-1: the last glyph in this face is a ligature spacer,
 	// which is very much baked.
-	unbaked := GID(fm.Font.NumGlyphs()) // out of range, always a miss
-	for gid := range GID(fm.Font.NumGlyphs()) {
-		if _, in := a.Slot(gid); !in {
+	unbaked := GID(fm.Font(Regular).NumGlyphs()) // out of range, always a miss
+	for gid := range GID(fm.Font(Regular).NumGlyphs()) {
+		if _, in := a.Slot(Key{Regular, gid}); !in {
 			unbaked = gid
 			break
 		}
 	}
-	if _, _, ok := a.GlyphUV(unbaked); ok {
+	if _, _, ok := a.GlyphUV(Key{Regular, unbaked}); ok {
 		t.Errorf("GlyphUV(%d) reports a hit for an unbaked glyph", unbaked)
 	}
 }

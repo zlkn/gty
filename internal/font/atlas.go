@@ -26,7 +26,18 @@ const (
 	StrideAlign = 256
 )
 
-// Atlas is the baked glyph sheet, keyed by glyph ID.
+// Key identifies one baked glyph. The style is part of the key because glyph
+// numbering is per face: GID 1167 is a different glyph in Regular and in Bold.
+type Key struct {
+	Style Style
+	GID   GID
+}
+
+// Atlas is the baked glyph sheet, keyed by style and glyph ID.
+//
+// Every style shares one sheet. They agree on the slot size (NewManager rejects
+// faces that do not), so the slots tile as a single grid and the renderer needs
+// one texture and one bind group for all four.
 //
 // Pix is padded to StrideAlign while Rect keeps the real width: image/draw and
 // the rasterizer honour Stride, so nothing downstream has to know, and UVs
@@ -51,13 +62,13 @@ type Atlas struct {
 	PadLeft, PadTop     int
 	PadRight, PadBottom int
 
-	ids  []GID
-	slot map[GID]int
+	keys []Key
+	slot map[Key]int
 }
 
-// Slot returns gid's slot in atlas pixels.
-func (a *Atlas) Slot(gid GID) (image.Rectangle, bool) {
-	i, ok := a.slot[gid]
+// Slot returns the key's slot in atlas pixels.
+func (a *Atlas) Slot(k Key) (image.Rectangle, bool) {
+	i, ok := a.slot[k]
 	if !ok {
 		return image.Rectangle{}, false
 	}
@@ -65,10 +76,10 @@ func (a *Atlas) Slot(gid GID) (image.Rectangle, bool) {
 	return image.Rect(col*a.SlotW, row*a.SlotH, (col+1)*a.SlotW, (row+1)*a.SlotH), true
 }
 
-// GlyphUV returns the top-left corner of gid's slot in texture coordinates.
+// GlyphUV returns the top-left corner of the key's slot in texture coordinates.
 // ok is false for a glyph that was never baked.
-func (a *Atlas) GlyphUV(gid GID) (u, v float32, ok bool) {
-	slot, ok := a.Slot(gid)
+func (a *Atlas) GlyphUV(k Key) (u, v float32, ok bool) {
+	slot, ok := a.Slot(k)
 	if !ok {
 		return 0, 0, false
 	}
@@ -77,7 +88,7 @@ func (a *Atlas) GlyphUV(gid GID) (u, v float32, ok bool) {
 }
 
 // Glyphs is the baked set, in slot order.
-func (a *Atlas) Glyphs() []GID { return a.ids }
+func (a *Atlas) Glyphs() []Key { return a.keys }
 
 // DumpPNG writes the atlas as grayscale, for eyeballing under config.Debug.
 //
@@ -165,9 +176,10 @@ func (r *rasterizer) draw(dst *image.Alpha, gid GID, dot fixed.Point26_6) error 
 // L0 R1 T0 B0, and a literal 1 would have survived a font swap and then quietly
 // clipped every ligature: with GSUB glyphs in the set PadLeft jumps to ~3 cells,
 // because a 4-cell ligature is drawn entirely in its last cell.
-func glyphPadding(r *rasterizer, ids []GID, cellW, cellH, ascent int) (l, t, right, b int) {
-	for _, gid := range ids {
-		bounds, _, err := r.f.GlyphBounds(&r.buf, gid, r.ppem, Hinting)
+func glyphPadding(rs []*rasterizer, keys []Key, cellW, cellH, ascent int) (l, t, right, b int) {
+	for _, k := range keys {
+		r := rs[k.Style]
+		bounds, _, err := r.f.GlyphBounds(&r.buf, k.GID, r.ppem, Hinting)
 		if err != nil || bounds.Empty() {
 			continue
 		}
@@ -181,27 +193,37 @@ func glyphPadding(r *rasterizer, ids []GID, cellW, cellH, ascent int) (l, t, rig
 	return l, t, right, b // seeded at 0, so every side is already clamped
 }
 
-// BakeAtlas rasterizes ids into one sheet sized from fm's cell metrics.
-func BakeAtlas(fm *FontManager, ids []GID) (*Atlas, error) {
-	if len(ids) == 0 {
+// BakeAtlas rasterizes every style's glyph set into one sheet sized from fm's
+// cell metrics.
+func BakeAtlas(fm *FontManager) (*Atlas, error) {
+	rasterizers := make([]*rasterizer, NumStyles)
+	var keys []Key
+	for i := range NumStyles {
+		style := Style(i)
+		f := fm.Font(style)
+		rasterizers[style] = &rasterizer{f: f, ppem: fm.PPEM}
+		for _, gid := range fm.Shaper(style).GlyphSet(f.NumGlyphs()) {
+			keys = append(keys, Key{Style: style, GID: gid})
+		}
+	}
+	if len(keys) == 0 {
 		return nil, fmt.Errorf("bake atlas: empty glyph set")
 	}
-	r := &rasterizer{f: fm.Font, ppem: fm.PPEM}
-	padL, padT, padR, padB := glyphPadding(r, ids, fm.CellWidth, fm.CellHeight, fm.Ascent)
+	padL, padT, padR, padB := glyphPadding(rasterizers, keys, fm.CellWidth, fm.CellHeight, fm.Ascent)
 
 	a := &Atlas{
 		SlotW: fm.CellWidth + padL + padR,
 		SlotH: fm.CellHeight + padT + padB,
 		Cols:  AtlasCols,
-		Rows:  (len(ids) + AtlasCols - 1) / AtlasCols,
+		Rows:  (len(keys) + AtlasCols - 1) / AtlasCols,
 
 		PadLeft: padL, PadTop: padT, PadRight: padR, PadBottom: padB,
 
-		ids:  ids,
-		slot: make(map[GID]int, len(ids)),
+		keys: keys,
+		slot: make(map[Key]int, len(keys)),
 	}
-	for i, gid := range ids {
-		a.slot[gid] = i
+	for i, k := range keys {
+		a.slot[k] = i
 	}
 
 	w, h := a.Cols*a.SlotW, a.Rows*a.SlotH
@@ -212,11 +234,11 @@ func BakeAtlas(fm *FontManager, ids []GID) (*Atlas, error) {
 		Rect:   image.Rect(0, 0, w, h),
 	}
 
-	for _, gid := range ids {
-		slot, _ := a.Slot(gid)
+	for _, k := range keys {
+		slot, _ := a.Slot(k)
 		dot := fixed.P(slot.Min.X+padL, slot.Min.Y+padT+fm.Ascent)
-		if err := r.draw(a.Img, gid, dot); err != nil {
-			return nil, fmt.Errorf("bake glyph %d: %w", gid, err)
+		if err := rasterizers[k.Style].draw(a.Img, k.GID, dot); err != nil {
+			return nil, fmt.Errorf("bake %s glyph %d: %w", k.Style, k.GID, err)
 		}
 	}
 	return a, nil
@@ -226,10 +248,10 @@ func BakeAtlas(fm *FontManager, ids []GID) (*Atlas, error) {
 // GPU: one quad per cell, quad = slot, quad origin = cell origin - (PadLeft,
 // PadTop), blended together. Used by the tests and by the debug dump — the GPU
 // path does not go through it.
-func (a *Atlas) RenderRow(gids []GID, cellW int) *image.Alpha {
-	dst := image.NewAlpha(image.Rect(0, 0, a.PadLeft+len(gids)*cellW+a.PadRight, a.SlotH))
-	for i, gid := range gids {
-		slot, ok := a.Slot(gid)
+func (a *Atlas) RenderRow(keys []Key, cellW int) *image.Alpha {
+	dst := image.NewAlpha(image.Rect(0, 0, a.PadLeft+len(keys)*cellW+a.PadRight, a.SlotH))
+	for i, k := range keys {
+		slot, ok := a.Slot(k)
 		if !ok {
 			continue
 		}
