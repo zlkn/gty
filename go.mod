@@ -4,6 +4,7 @@ go 1.26.5
 
 require (
 	github.com/go-gl/glfw/v3.4/glfw v0.1.0-pre.1.0.20260628091122-0bd588dc30cf
+	github.com/go-text/typesetting v0.3.4
 	github.com/oliverbestmann/webgpu v1.34.3
 	golang.org/x/image v0.45.0
 )
