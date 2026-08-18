@@ -90,7 +90,7 @@ func (a *Atlas) GlyphUV(k Key) (u, v float32, ok bool) {
 // Glyphs is the baked set, in slot order.
 func (a *Atlas) Glyphs() []Key { return a.keys }
 
-// DumpPNG writes the atlas as grayscale, for eyeballing under config.Debug.
+// DumpPNG writes the atlas as grayscale, for eyeballing the baked sheet by hand.
 //
 // png.Encode on an *image.Alpha yields an invisible image — color.Alpha is
 // premultiplied white, so the glyphs are white on transparent. image.Gray has an

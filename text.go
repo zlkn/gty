@@ -2,6 +2,9 @@ package main
 
 import (
 	_ "embed"
+	"fmt"
+	"image"
+	"os"
 	"unsafe"
 
 	"github.com/oliverbestmann/webgpu/wgpu"
@@ -25,7 +28,8 @@ var (
 	boldItalicTTF []byte
 )
 
-const maxInstances = 1 << 14
+// initialInstances is the glyph buffer's starting capacity; Layout grows it.
+const initialInstances = 1 << 14
 
 // instance is one glyph quad. Layout must match the @location bindings in text.wgsl.
 type instance struct {
@@ -35,8 +39,9 @@ type instance struct {
 }
 
 type text struct {
-	queue *wgpu.Queue
-	fm    *font.FontManager
+	device *wgpu.Device
+	queue  *wgpu.Queue
+	fm     *font.FontManager
 
 	pipeline  *wgpu.RenderPipeline
 	bindGroup *wgpu.BindGroup
@@ -47,6 +52,7 @@ type text struct {
 	sampler   *wgpu.Sampler
 
 	instances []instance
+	bufCap    int        // vertexBuf capacity, in instances
 	gids      []font.GID // scratch, reused across rows
 }
 
@@ -68,7 +74,7 @@ func newText(device *wgpu.Device, queue *wgpu.Queue, format wgpu.TextureFormat, 
 	if err != nil {
 		return nil, err
 	}
-	t = &text{queue: queue, fm: fm}
+	t = &text{device: device, queue: queue, fm: fm}
 	img := fm.Atlas.Img
 
 	extent := wgpu.Extent3D{
@@ -125,11 +131,12 @@ func newText(device *wgpu.Device, queue *wgpu.Queue, format wgpu.TextureFormat, 
 	}
 	if t.vertexBuf, err = device.TryCreateBuffer(&wgpu.BufferDescriptor{
 		Label: "Glyph Instances",
-		Size:  uint64(maxInstances * unsafe.Sizeof(instance{})),
+		Size:  uint64(initialInstances * unsafe.Sizeof(instance{})),
 		Usage: wgpu.BufferUsageVertex | wgpu.BufferUsageCopyDst,
 	}); err != nil {
 		return t, err
 	}
+	t.bufCap = initialInstances
 
 	shader, err := device.TryCreateShaderModule(&wgpu.ShaderModuleDescriptor{
 		Label:      "text.wgsl",
@@ -209,54 +216,97 @@ type line struct {
 	Color [4]float32
 }
 
-// Set lays lines out on the cell grid, anchored at the top-left with padPx
-// inset. Newlines inside a line's text are not handled.
+func (t *text) CellSize() (w, h int) { return t.fm.CellWidth, t.fm.CellHeight }
+
+// Layout lays every pane's lines onto that pane's own grid and records the pane's
+// slice of the shared instance buffer. Newlines inside a line's text are not
+// handled.
+//
+// The grid is the clip: cells past a pane's cols and rows are dropped here, so
+// only what shows gets shaped.
 //
 // Every cell gets a slot-sized quad offset back by the atlas padding, so a
 // ligature glyph that reaches over its neighbours lands where the font drew it.
 // Cell origins still step by CellWidth — calt in this font is monospace
 // preserving, one glyph per cell.
-func (t *text) Set(lines []line, padPx float32) {
+func (t *text) Layout(panes []*pane, focused *pane) {
 	t.instances = t.instances[:0]
 	a := t.fm.Atlas
 	slotW, slotH := float32(a.SlotW), float32(a.SlotH)
 	atlasW, atlasH := float32(a.Img.Rect.Dx()), float32(a.Img.Rect.Dy())
 	cellW, cellH := float32(t.fm.CellWidth), float32(t.fm.CellHeight)
 
-	for row, ln := range lines {
-		runes := []rune(ln.Text)
-		gids, ok := t.fm.Shaper(ln.Style).ShapeRow(t.gids[:0], runes, true)
-		if !ok {
-			// The font broke one-glyph-per-cell for this row; a per-cell renderer
-			// cannot draw that, so fall back to plain cmap and lose the ligatures.
-			gids = gids[:0]
-			for _, r := range runes {
-				gid, _ := t.fm.GlyphIndex(ln.Style, r)
-				gids = append(gids, gid)
+	for _, p := range panes {
+		p.first, p.count = uint32(len(t.instances)), 0
+		originX := float32(p.rect.Min.X) + padding
+		originY := float32(p.rect.Min.Y) + padding
+
+		for row, ln := range p.lines {
+			if row >= p.rows {
+				break
+			}
+			runes := []rune(ln.Text)
+			if len(runes) > p.cols {
+				runes = runes[:p.cols]
+			}
+			gids, ok := t.fm.Shaper(ln.Style).ShapeRow(t.gids[:0], runes, true)
+			if !ok {
+				// The font broke one-glyph-per-cell for this row; a per-cell renderer
+				// cannot draw that, so fall back to plain cmap and lose the ligatures.
+				gids = gids[:0]
+				for _, r := range runes {
+					gid, _ := t.fm.GlyphIndex(ln.Style, r)
+					gids = append(gids, gid)
+				}
+			}
+			t.gids = gids
+
+			color := ln.Color
+			if p != focused {
+				color = dim(color)
+			}
+			y := originY + float32(row)*cellH - float32(a.PadTop)
+			for col, gid := range gids {
+				u, v, ok := a.GlyphUV(font.Key{Style: ln.Style, GID: gid})
+				if !ok {
+					continue
+				}
+				t.instances = append(t.instances, instance{
+					rect:  [4]float32{originX + float32(col)*cellW - float32(a.PadLeft), y, slotW, slotH},
+					uv:    [4]float32{u, v, u + slotW/atlasW, v + slotH/atlasH},
+					color: color,
+				})
 			}
 		}
-		t.gids = gids
+		p.count = uint32(len(t.instances)) - p.first
+	}
+	t.upload()
+}
 
-		y := padPx + float32(row)*cellH - float32(a.PadTop)
-		for col, gid := range gids {
-			u, v, ok := a.GlyphUV(font.Key{Style: ln.Style, GID: gid})
-			if !ok {
-				continue
-			}
-			t.instances = append(t.instances, instance{
-				rect:  [4]float32{padPx + float32(col)*cellW - float32(a.PadLeft), y, slotW, slotH},
-				uv:    [4]float32{u, v, u + slotW/atlasW, v + slotH/atlasH},
-				color: ln.Color,
-			})
+// upload grows the instance buffer if the frame needs more room, then writes it.
+func (t *text) upload() {
+	if need := len(t.instances); need > t.bufCap {
+		buf, n, err := growBuffer(t.device, "Glyph Instances", t.vertexBuf,
+			wgpu.BufferUsageVertex|wgpu.BufferUsageCopyDst, t.bufCap, need, unsafe.Sizeof(instance{}))
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "gty: grow glyph buffer to %d: %v; text clipped\n", need, err)
+			t.instances = t.instances[:t.bufCap]
+		} else {
+			t.vertexBuf, t.bufCap = buf, n
 		}
 	}
-	if len(t.instances) > maxInstances {
-		t.instances = t.instances[:maxInstances]
+	if len(t.instances) == 0 {
+		return
 	}
 	t.queue.WriteBuffer(t.vertexBuf, 0, wgpu.ToBytes(t.instances))
 }
 
-func (t *text) Draw(pass *wgpu.RenderPassEncoder, viewportW, viewportH uint32) {
+// Draw paints each pane's slice of the buffer, clipped to that pane.
+//
+// The scissor is load-bearing, not cosmetic: a quad is slot-sized and PadLeft is
+// about three cells wide on this face, so a ligature in a pane's first column
+// would otherwise paint over the pane to its left.
+func (t *text) Draw(pass *wgpu.RenderPassEncoder, panes []*pane, viewportW, viewportH uint32) {
 	if len(t.instances) == 0 {
 		return
 	}
@@ -266,36 +316,56 @@ func (t *text) Draw(pass *wgpu.RenderPassEncoder, viewportW, viewportH uint32) {
 	pass.SetPipeline(t.pipeline)
 	pass.SetBindGroup(0, t.bindGroup, nil)
 	pass.SetVertexBuffer(0, t.vertexBuf, 0, wgpu.WholeSize)
-	pass.Draw(4, uint32(len(t.instances)), 0, 0)
+
+	surface := image.Rect(0, 0, int(viewportW), int(viewportH))
+	for _, p := range panes {
+		// A scissor past the attachment is a validation error, and a pane rect can
+		// outlive the frame it was laid out for.
+		r := p.rect.Intersect(surface)
+		if p.count == 0 || r.Empty() {
+			continue
+		}
+		pass.SetScissorRect(uint32(r.Min.X), uint32(r.Min.Y), uint32(r.Dx()), uint32(r.Dy()))
+		pass.Draw(4, p.count, 0, p.first)
+	}
 }
 
+// release is idempotent: newText releases a half-built renderer on its error
+// paths, and the window releases it again on teardown.
 func (t *text) release() {
 	if t == nil {
 		return
 	}
 	if t.bindGroup != nil {
 		t.bindGroup.Release()
+		t.bindGroup = nil
 	}
 	if t.pipeline != nil {
 		t.pipeline.Release()
+		t.pipeline = nil
 	}
 	if t.vertexBuf != nil {
 		t.vertexBuf.Release()
+		t.vertexBuf, t.bufCap = nil, 0
 	}
 	if t.uniform != nil {
 		t.uniform.Release()
+		t.uniform = nil
 	}
 	if t.sampler != nil {
 		t.sampler.Release()
+		t.sampler = nil
 	}
 	if t.view != nil {
 		t.view.Release()
+		t.view = nil
 	}
 	if t.texture != nil {
 		t.texture.Release()
+		t.texture = nil
 	}
 	if t.fm != nil {
 		t.fm.Close()
+		t.fm = nil
 	}
 }
-

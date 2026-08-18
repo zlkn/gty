@@ -153,7 +153,7 @@ func TestSharedBaseline(t *testing.T) {
 	}
 }
 
-// TestDumpPNG covers the -debug path: an *image.Alpha encoded directly would come
+// TestDumpPNG covers the debug dump: an *image.Alpha encoded directly would come
 // out invisible, so the dump has to go through the image.Gray alias.
 func TestDumpPNG(t *testing.T) {
 	fm := newTestManager(t)
