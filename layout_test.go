@@ -63,8 +63,8 @@ func TestSplitRectTooSmall(t *testing.T) {
 
 // TestLayoutTreeGrids: each pane's grid comes from its own rect, padded both sides.
 func TestLayoutTreeGrids(t *testing.T) {
-	root := &node{pane: &pane{id: 1}}
-	root.split(root.pane, vertical, &pane{id: 2})
+	root := &node{pane: newPane(1)}
+	root.split(root.pane, vertical, newPane(2))
 
 	full := image.Rect(0, 0, 900, 600)
 	panes, dividers := layoutTree(root, full, testCellW, testCellH)
@@ -87,7 +87,7 @@ func TestLayoutTreeGrids(t *testing.T) {
 // TestLayoutTreeTinyWindow: a pane with no room reports a zero grid, not a negative
 // one.
 func TestLayoutTreeTinyWindow(t *testing.T) {
-	root := &node{pane: &pane{id: 1}}
+	root := &node{pane: newPane(1)}
 	panes, _ := layoutTree(root, image.Rect(0, 0, 20, 20), testCellW, testCellH)
 
 	if len(panes) != 1 {
@@ -100,13 +100,13 @@ func TestLayoutTreeTinyWindow(t *testing.T) {
 
 // TestSplitOrderAndNesting pins the traversal order the focus cycles through.
 func TestSplitOrderAndNesting(t *testing.T) {
-	first := &pane{id: 1}
+	first := newPane(1)
 	root := &node{pane: first}
-	second := &pane{id: 2}
+	second := newPane(2)
 	root.split(first, vertical, second)
 
 	// Split the right pane horizontally: 1 | (2 over 3).
-	third := &pane{id: 3}
+	third := newPane(3)
 	if !root.split(second, horizontal, third) {
 		t.Fatal("split did not find the nested pane")
 	}
@@ -127,7 +127,7 @@ func TestSplitOrderAndNesting(t *testing.T) {
 }
 
 func TestNextPaneCycles(t *testing.T) {
-	one, two, three := &pane{id: 1}, &pane{id: 2}, &pane{id: 3}
+	one, two, three := newPane(1), newPane(2), newPane(3)
 	panes := []*pane{one, two, three}
 
 	for _, tc := range []struct{ from, want *pane }{{one, two}, {two, three}, {three, one}} {
@@ -144,7 +144,7 @@ func TestNextPaneCycles(t *testing.T) {
 // renderer rests on: pane rects stay inside the window and never overlap.
 func TestDeepTreeTiles(t *testing.T) {
 	full := image.Rect(0, 0, 900, 600)
-	first := &pane{id: 1}
+	first := newPane(1)
 	root := &node{pane: first}
 
 	panes, _ := layoutTree(root, full, testCellW, testCellH)
@@ -154,7 +154,7 @@ func TestDeepTreeTiles(t *testing.T) {
 		if i%2 == 1 {
 			d = horizontal
 		}
-		nu := &pane{id: i + 2}
+		nu := newPane(i + 2)
 		if !root.split(focus, d, nu) {
 			t.Fatalf("split %d did not find pane %d", i, focus.id)
 		}
@@ -194,9 +194,9 @@ func TestDeepTreeTiles(t *testing.T) {
 // TestCloseCollapsesIntoSibling: closing hands the space to the sibling, and the
 // last pane refuses.
 func TestCloseCollapsesIntoSibling(t *testing.T) {
-	first := &pane{id: 1}
+	first := newPane(1)
 	root := &node{pane: first}
-	second := &pane{id: 2}
+	second := newPane(2)
 	root.split(first, vertical, second)
 
 	next := root.close(second)
@@ -221,9 +221,9 @@ func TestCloseCollapsesIntoSibling(t *testing.T) {
 
 // TestCloseNestedFocusesSibling: the focus lands in the subtree that took the space.
 func TestCloseNestedFocusesSibling(t *testing.T) {
-	first := &pane{id: 1}
+	first := newPane(1)
 	root := &node{pane: first}
-	second, third := &pane{id: 2}, &pane{id: 3}
+	second, third := newPane(2), newPane(3)
 	root.split(first, vertical, second)
 	root.split(second, horizontal, third)
 

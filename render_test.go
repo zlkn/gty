@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"image"
 	"image/png"
 	"os"
@@ -19,7 +20,7 @@ const (
 )
 
 // newTestGPU skips the test on a machine with no adapter.
-func newTestGPU(t *testing.T) (*wgpu.Device, *wgpu.Queue) {
+func newTestGPU(t testing.TB) (*wgpu.Device, *wgpu.Queue) {
 	t.Helper()
 
 	instance := wgpu.CreateInstance(nil)
@@ -42,7 +43,7 @@ func newTestGPU(t *testing.T) (*wgpu.Device, *wgpu.Queue) {
 	return device, queue
 }
 
-func newTestText(t *testing.T, device *wgpu.Device, queue *wgpu.Queue) *text {
+func newTestText(t testing.TB, device *wgpu.Device, queue *wgpu.Queue) *text {
 	t.Helper()
 	txt, err := newText(device, queue, testFormat, fontSize)
 	if err != nil {
@@ -55,12 +56,28 @@ func newTestText(t *testing.T, device *wgpu.Device, queue *wgpu.Queue) *text {
 // splitLayout is the tree the app has after one Ctrl+Shift+D.
 func splitLayout(t *testing.T, txt *text, w, h int) ([]*pane, []image.Rectangle) {
 	t.Helper()
-	root := &node{pane: &pane{id: 1, lines: sample(1)}}
-	if !root.split(root.pane, vertical, &pane{id: 2, lines: sample(2)}) {
+	first := newPane(1)
+	fillDemo(first)
+	second := newPane(2)
+	fillDemo(second)
+
+	root := &node{pane: first}
+	if !root.split(first, vertical, second) {
 		t.Fatal("split did not find the root pane")
 	}
 	cellW, cellH := txt.CellSize()
 	return layoutTree(root, image.Rect(0, 0, w, h), cellW, cellH)
+}
+
+// gridPane skips the layout pass: a pane with the grid and history the test wants.
+func gridPane(id int, rect image.Rectangle, cols, rows int, lines ...line) *pane {
+	p := newPane(id)
+	for _, l := range lines {
+		p.Write(l)
+	}
+	p.rect = rect
+	p.setGrid(cols, rows)
+	return p
 }
 
 // renderOffscreen draws into a fresh texture and reads it back, so a frame can be
@@ -247,8 +264,8 @@ func TestPaneContentIsIndependent(t *testing.T) {
 	for i := range long {
 		long[i] = row
 	}
-	left := &pane{id: 1, rect: image.Rect(0, 0, 300, 400), cols: 40, rows: 20, lines: []line{row}}
-	right := &pane{id: 2, rect: image.Rect(300, 0, 600, 400), cols: 40, rows: 20, lines: long}
+	left := gridPane(1, image.Rect(0, 0, 300, 400), 40, 20, row)
+	right := gridPane(2, image.Rect(300, 0, 600, 400), 40, 20, long...)
 
 	txt.Layout([]*pane{left, right}, left)
 
@@ -266,17 +283,87 @@ func TestGridClipsToPaneColumns(t *testing.T) {
 	device, queue := newTestGPU(t)
 	txt := newTestText(t, device, queue)
 
-	p := &pane{
-		id: 1, rect: image.Rect(0, 0, 200, 100), cols: 10, rows: 1,
-		lines: []line{
-			{Text: strings.Repeat("=", 30), Style: font.Regular, Color: foreground},
-			{Text: "dropped row", Style: font.Regular, Color: foreground},
-		},
-	}
+	p := gridPane(1, image.Rect(0, 0, 200, 100), 10, 1,
+		line{Text: "scrolled off the top", Style: font.Regular, Color: foreground},
+		line{Text: strings.Repeat("=", 30), Style: font.Regular, Color: foreground},
+	)
 	txt.Layout([]*pane{p}, p)
 
 	if p.count != 10 {
 		t.Errorf("pane of 10x1 cells laid out %d quads, want 10", p.count)
+	}
+}
+
+// TestScrollRendersDifferentLines: the same pane at two scroll positions is two
+// different frames, and a full history still costs only a screenful of quads.
+func TestScrollRendersDifferentLines(t *testing.T) {
+	device, queue := newTestGPU(t)
+	txt := newTestText(t, device, queue)
+
+	p := newPane(1)
+	fillDemo(p)
+	cellW, cellH := txt.CellSize()
+	p.rect = image.Rect(0, 0, testWidth, testHeight)
+	p.setGrid((testWidth-2*padding)/cellW, (testHeight-2*padding)/cellH)
+
+	draw := func(pass *wgpu.RenderPassEncoder) { txt.Draw(pass, []*pane{p}, testWidth, testHeight) }
+
+	txt.Layout([]*pane{p}, p)
+	if int(p.count) > p.cols*p.rows {
+		t.Errorf("a %dx%d pane over %d lines laid out %d quads", p.cols, p.rows, p.buf.Len(), p.count)
+	}
+	tail := renderOffscreen(t, device, queue, draw)
+
+	if !p.scrollBy(20) {
+		t.Fatal("a full history did not scroll")
+	}
+	txt.Layout([]*pane{p}, p)
+	back := renderOffscreen(t, device, queue, draw)
+
+	if bytes.Equal(tail.Pix, back.Pix) {
+		t.Error("scrolling back 20 lines rendered the same frame")
+	}
+}
+
+// scrollPane is a full history over a screen-sized grid: the shape a wheel notch
+// has to keep up with.
+func scrollPane(txt *text) (*pane, []*pane) {
+	p := newPane(1)
+	fillDemo(p)
+	cellW, cellH := txt.CellSize()
+	p.rect = image.Rect(0, 0, testWidth, testHeight)
+	p.setGrid((testWidth-2*padding)/cellW, (testHeight-2*padding)/cellH)
+	return p, []*pane{p}
+}
+
+// BenchmarkScrollLayout is a wheel notch over history that has been shaped already,
+// so it measures the quad emit alone.
+func BenchmarkScrollLayout(b *testing.B) {
+	device, queue := newTestGPU(b)
+	txt := newTestText(b, device, queue)
+	p, panes := scrollPane(txt)
+	txt.Layout(panes, p)
+
+	for b.Loop() {
+		if !p.scrollBy(wheelLines) {
+			p.scroll = 0
+		}
+		txt.Layout(panes, p)
+	}
+}
+
+// BenchmarkScrollLayoutCold reshapes the whole screen every notch — what scrolling
+// would cost without the cache in the scrollback.
+func BenchmarkScrollLayoutCold(b *testing.B) {
+	device, queue := newTestGPU(b)
+	txt := newTestText(b, device, queue)
+	p, panes := scrollPane(txt)
+
+	for b.Loop() {
+		// Two width changes leave cols where it was and every cached row stale.
+		p.buf.setCols(p.cols + 1)
+		p.buf.setCols(p.cols)
+		txt.Layout(panes, p)
 	}
 }
 
@@ -294,7 +381,7 @@ func TestLayoutGrowsVertexBuffer(t *testing.T) {
 	for i := range lines {
 		lines[i] = line{Text: strings.Repeat("x", cols), Style: font.Regular, Color: foreground}
 	}
-	p := &pane{id: 1, rect: image.Rect(0, 0, testWidth, testHeight), cols: cols, rows: rows, lines: lines}
+	p := gridPane(1, image.Rect(0, 0, testWidth, testHeight), cols, rows, lines...)
 
 	txt.Layout([]*pane{p}, p)
 

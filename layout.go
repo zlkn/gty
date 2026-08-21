@@ -10,15 +10,53 @@ const (
 	horizontal
 )
 
-// pane is a leaf of the layout tree. lines belong to the pane, not to the app —
-// this is where a per-pane PTY screen will land.
+// pane is a leaf of the layout tree. The history belongs to the pane, not to the
+// app — this is where a per-pane PTY will write.
 type pane struct {
 	id         int             // stable label, never reused after a close
 	rect       image.Rectangle // framebuffer px, divider excluded
 	cols, rows int             // grid that fits rect after padding
-	lines      []line
+	buf        *scrollback
+	scroll     int // lines back from the newest; 0 = pinned to the tail
 
 	first, count uint32 // the pane's slice of the shared instance buffer
+}
+
+func newPane(id int) *pane { return &pane{id: id, buf: newScrollback()} }
+
+// maxScroll is as far back as the view can go before the oldest line is at the top.
+func (p *pane) maxScroll() int { return max(0, p.buf.Len()-p.rows) }
+
+// scrollBy moves the view delta lines back through history (negative goes forward)
+// and reports whether it moved.
+func (p *pane) scrollBy(delta int) bool {
+	was := p.scroll
+	p.scroll = min(max(p.scroll+delta, 0), p.maxScroll())
+	return p.scroll != was
+}
+
+// visible is the range of history on screen, oldest first.
+func (p *pane) visible() (from, to int) {
+	to = p.buf.Len() - p.scroll
+	return max(0, to-p.rows), to
+}
+
+// setGrid takes the grid from a layout pass. The cached shaping is clipped to cols,
+// and a taller pane can leave the view further back than there is history for.
+func (p *pane) setGrid(cols, rows int) {
+	p.cols, p.rows = cols, rows
+	p.buf.setCols(cols)
+	p.scroll = min(p.scroll, p.maxScroll())
+}
+
+// Write appends a line, keeping a scrolled-back view on the same text. The
+// increment is right whether or not the ring evicted: an eviction shifts every
+// index down by one instead of growing the history.
+func (p *pane) Write(l line) {
+	p.buf.Append(l)
+	if p.scroll > 0 {
+		p.scroll = min(p.scroll+1, p.maxScroll())
+	}
 }
 
 // node is either a leaf (pane != nil) or a split of exactly two children.
@@ -97,8 +135,7 @@ func layoutTree(root *node, r image.Rectangle, cellW, cellH int) (panes []*pane,
 		if n.pane != nil {
 			p := n.pane
 			p.rect = r
-			p.cols = max(0, (r.Dx()-2*padding)/cellW)
-			p.rows = max(0, (r.Dy()-2*padding)/cellH)
+			p.setGrid(max(0, (r.Dx()-2*padding)/cellW), max(0, (r.Dy()-2*padding)/cellH))
 			panes = append(panes, p)
 			return
 		}

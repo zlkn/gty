@@ -52,8 +52,7 @@ type text struct {
 	sampler   *wgpu.Sampler
 
 	instances []instance
-	bufCap    int        // vertexBuf capacity, in instances
-	gids      []font.GID // scratch, reused across rows
+	bufCap    int // vertexBuf capacity, in instances
 }
 
 func newText(device *wgpu.Device, queue *wgpu.Queue, format wgpu.TextureFormat, sizePt float64) (t *text, err error) {
@@ -218,12 +217,31 @@ type line struct {
 
 func (t *text) CellSize() (w, h int) { return t.fm.CellWidth, t.fm.CellHeight }
 
-// Layout lays every pane's lines onto that pane's own grid and records the pane's
-// slice of the shared instance buffer. Newlines inside a line's text are not
-// handled.
+// shapeRow shapes l clipped to cols cells, appending to dst.
+func (t *text) shapeRow(l *line, cols int, dst []font.GID) []font.GID {
+	runes := []rune(l.Text)
+	if len(runes) > cols {
+		runes = runes[:cols]
+	}
+	gids, ok := t.fm.Shaper(l.Style).ShapeRow(dst, runes, true)
+	if !ok {
+		// The font broke one-glyph-per-cell for this row; a per-cell renderer cannot
+		// draw that, so fall back to plain cmap and lose the ligatures.
+		gids = gids[:0]
+		for _, r := range runes {
+			gid, _ := t.fm.GlyphIndex(l.Style, r)
+			gids = append(gids, gid)
+		}
+	}
+	return gids
+}
+
+// Layout lays each pane's visible window of history onto that pane's own grid and
+// records the pane's slice of the shared instance buffer. Newlines inside a line's
+// text are not handled.
 //
-// The grid is the clip: cells past a pane's cols and rows are dropped here, so
-// only what shows gets shaped.
+// The grid is the clip: rows past the window are never visited and cells past cols
+// are dropped by shapeRow, so only what shows gets shaped.
 //
 // Every cell gets a slot-sized quad offset back by the atlas padding, so a
 // ligature glyph that reaches over its neighbours lands where the font drew it.
@@ -241,31 +259,17 @@ func (t *text) Layout(panes []*pane, focused *pane) {
 		originX := float32(p.rect.Min.X) + padding
 		originY := float32(p.rect.Min.Y) + padding
 
-		for row, ln := range p.lines {
-			if row >= p.rows {
-				break
-			}
-			runes := []rune(ln.Text)
-			if len(runes) > p.cols {
-				runes = runes[:p.cols]
-			}
-			gids, ok := t.fm.Shaper(ln.Style).ShapeRow(t.gids[:0], runes, true)
-			if !ok {
-				// The font broke one-glyph-per-cell for this row; a per-cell renderer
-				// cannot draw that, so fall back to plain cmap and lose the ligatures.
-				gids = gids[:0]
-				for _, r := range runes {
-					gid, _ := t.fm.GlyphIndex(ln.Style, r)
-					gids = append(gids, gid)
-				}
-			}
-			t.gids = gids
+		shape := func(l *line, dst []font.GID) []font.GID { return t.shapeRow(l, p.cols, dst) }
+		from, to := p.visible()
+		for i := from; i < to; i++ {
+			ln := p.buf.At(i)
+			gids := p.buf.shaped(i, shape)
 
 			color := ln.Color
 			if p != focused {
 				color = dim(color)
 			}
-			y := originY + float32(row)*cellH - float32(a.PadTop)
+			y := originY + float32(i-from)*cellH - float32(a.PadTop)
 			for col, gid := range gids {
 				u, v, ok := a.GlyphUV(font.Key{Style: ln.Style, GID: gid})
 				if !ok {

@@ -3,7 +3,9 @@
 // is event-driven rather than a game loop so an idle terminal costs no CPU.
 //
 // Keys: Ctrl+Shift+D and Ctrl+Shift+E split the focused pane, Ctrl+Shift+W closes
-// it, Ctrl+Tab cycles the focus, Escape or Ctrl+Q quits.
+// it, Ctrl+Tab cycles the focus, Escape or Ctrl+Q quits. The wheel scrolls the pane
+// under the mouse; Shift+PageUp/PageDown and Ctrl+Shift+Up/Down scroll the focused
+// one.
 package main
 
 import (
@@ -28,6 +30,7 @@ const (
 	fontSize      = 16
 	padding       = 8
 	dividerWidth  = 1
+	wheelLines    = 3
 
 	// dimFactor darkens unfocused panes. They have no border of their own, so
 	// brightness is the whole focus cue.
@@ -40,22 +43,22 @@ var HELLO_WORLD = []string{
 	`func f[T any](x T) T { return x }`,
 }
 
-// sample repeats HELLO_WORLD once per style so all four can be compared at a
-// glance, each block under a label drawn in Regular. The pane id heads the text so
-// two panes are never identical on screen.
-func sample(id int) []line {
-	out := []line{
-		{Text: fmt.Sprintf("pane %d", id), Style: font.Bold, Color: label},
-		{},
-	}
-	for _, style := range []font.Style{font.Regular, font.Bold, font.Italic, font.BoldItalic} {
-		out = append(out, line{Text: style.String() + ":", Style: font.Regular, Color: label})
-		for _, txt := range HELLO_WORLD {
-			out = append(out, line{Text: txt, Style: style, Color: foreground})
+// fillDemo fills a pane's history to capacity until a PTY writes real output. Lines
+// are numbered so the scroll position is readable, and cycle the styles so all four
+// stay visible.
+func fillDemo(p *pane) {
+	styles := []font.Style{font.Regular, font.Bold, font.Italic, font.BoldItalic}
+	for i := range maxScrollback {
+		l := line{
+			Text:  fmt.Sprintf("pane %d  %05d | %s", p.id, i, HELLO_WORLD[i%len(HELLO_WORLD)]),
+			Style: styles[i/len(HELLO_WORLD)%len(styles)],
+			Color: foreground,
 		}
-		out = append(out, line{})
+		if i%10 == 0 {
+			l.Color = label
+		}
+		p.Write(l)
 	}
-	return out
 }
 
 var (
@@ -100,7 +103,9 @@ type app struct {
 // spawned.
 func (a *app) newPane() *pane {
 	a.nextID++
-	return &pane{id: a.nextID, lines: sample(a.nextID)}
+	p := newPane(a.nextID)
+	fillDemo(p)
+	return p
 }
 
 func main() {
@@ -185,6 +190,9 @@ func newApp() (*app, error) {
 		}
 		a.onKey(w, key, mods)
 	})
+	window.SetScrollCallback(func(w *glfw.Window, _, yoff float64) {
+		a.scrollAt(w, yoff)
+	})
 
 	a.dirty.Store(true)
 	return a, nil
@@ -229,7 +237,58 @@ func (a *app) onKey(w *glfw.Window, key glfw.Key, mods glfw.ModifierKey) {
 		a.closeFocused(w)
 	case key == glfw.KeyTab && ctrl:
 		a.focusNext()
+	case key == glfw.KeyPageUp && shift:
+		a.scrollFocused(a.focused.rows - 1)
+	case key == glfw.KeyPageDown && shift:
+		a.scrollFocused(-(a.focused.rows - 1))
+	case key == glfw.KeyUp && ctrl && shift:
+		a.scrollFocused(1)
+	case key == glfw.KeyDown && ctrl && shift:
+		a.scrollFocused(-1)
 	}
+}
+
+func (a *app) scrollFocused(lines int) {
+	if a.focused.scrollBy(lines) {
+		a.relayout()
+		a.Damage()
+	}
+}
+
+// scrollAt scrolls the pane under the mouse, which a terminal does regardless of
+// which pane has the focus.
+func (a *app) scrollAt(w *glfw.Window, yoff float64) {
+	// The cursor comes in window coordinates and pane rects are framebuffer pixels;
+	// on HiDPI those are different numbers.
+	x, y := w.GetCursorPos()
+	sx, sy := framebufferScale(w)
+	at := image.Pt(int(x*sx), int(y*sy))
+
+	lines := int(yoff * wheelLines)
+	if lines == 0 && yoff != 0 {
+		lines = 1 // a touchpad's fractional notch still has to move something
+		if yoff < 0 {
+			lines = -1
+		}
+	}
+	for _, p := range a.panes {
+		if at.In(p.rect) {
+			if p.scrollBy(lines) {
+				a.relayout()
+				a.Damage()
+			}
+			return
+		}
+	}
+}
+
+func framebufferScale(w *glfw.Window) (x, y float64) {
+	winW, winH := w.GetSize()
+	if winW == 0 || winH == 0 {
+		return 1, 1
+	}
+	fbW, fbH := w.GetFramebufferSize()
+	return float64(fbW) / float64(winW), float64(fbH) / float64(winH)
 }
 
 func (a *app) splitFocused(d dir) {
