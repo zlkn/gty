@@ -177,17 +177,17 @@ func TestDeepTreeTiles(t *testing.T) {
 	}
 
 	for len(panes) > 1 {
-		next := root.close(panes[0])
-		if next == nil {
-			t.Fatalf("close refused with %d panes left", len(panes))
+		next, found := root.close(panes[0])
+		if !found || next == nil {
+			t.Fatalf("close refused with %d panes left (next=%v found=%v)", len(panes), next, found)
 		}
 		panes, _ = layoutTree(root, full, testCellW, testCellH)
 	}
 	if panes[0].rect != full {
 		t.Errorf("last pane is %v, want the whole window", panes[0].rect)
 	}
-	if got := root.close(panes[0]); got != nil {
-		t.Errorf("closing the last pane returned %v, want nil", got)
+	if next, found := root.close(panes[0]); next != nil || !found {
+		t.Errorf("closing the last pane returned (%v, %v), want (nil, true)", next, found)
 	}
 }
 
@@ -199,9 +199,9 @@ func TestCloseCollapsesIntoSibling(t *testing.T) {
 	second := newPane(2)
 	root.split(first, vertical, second)
 
-	next := root.close(second)
-	if next != first {
-		t.Fatalf("focus went to %v, want pane 1", next)
+	next, found := root.close(second)
+	if !found || next != first {
+		t.Fatalf("focus went to %v (found=%v), want pane 1", next, found)
 	}
 	panes, dividers := layoutTree(root, image.Rect(0, 0, 900, 600), testCellW, testCellH)
 	if len(panes) != 1 || panes[0] != first {
@@ -214,8 +214,14 @@ func TestCloseCollapsesIntoSibling(t *testing.T) {
 		t.Errorf("surviving pane is %v, want the whole window", panes[0].rect)
 	}
 
-	if got := root.close(first); got != nil {
-		t.Errorf("closing the last pane returned %v, want nil", got)
+	if next, found := root.close(first); next != nil || !found {
+		t.Errorf("closing the last pane returned (%v, %v), want (nil, true)", next, found)
+	}
+
+	// A pane that is not in the tree must not read as "the last one": conflating the
+	// two would close the window on a lookup miss.
+	if next, found := root.close(newPane(99)); next != nil || found {
+		t.Errorf("closing a stranger returned (%v, %v), want (nil, false)", next, found)
 	}
 }
 
@@ -227,8 +233,8 @@ func TestCloseNestedFocusesSibling(t *testing.T) {
 	root.split(first, vertical, second)
 	root.split(second, horizontal, third)
 
-	if next := root.close(third); next != second {
-		t.Fatalf("focus went to %v, want pane 2", next)
+	if next, found := root.close(third); !found || next != second {
+		t.Fatalf("focus went to %v (found=%v), want pane 2", next, found)
 	}
 	panes, _ := layoutTree(root, image.Rect(0, 0, 900, 600), testCellW, testCellH)
 	if got := leafIDs(panes); len(got) != 2 || got[0] != 1 || got[1] != 2 {

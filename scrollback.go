@@ -1,68 +1,68 @@
 package main
 
-import "gty/internal/font"
-
 const maxScrollback = 10_000
 
-// row is one line of history with its shaped glyphs. gids belong to the generation
-// they were shaped in, so setCols invalidates every row at once.
-type row struct {
-	line line
-	gids []font.GID
-	gen  uint32
-}
-
-// scrollback is a pane's line history: a ring of at most maxScrollback rows.
+// scrollback is a pane's line history: the lines that have scrolled off the screen,
+// in a ring of at most maxScrollback rows.
 //
-// The shaped glyphs live next to the text because scrolling is otherwise dominated
-// by reshaping — a screenful of code costs tens of milliseconds through harfbuzz,
-// and every wheel notch is a frame.
+// The ring grows to its bound rather than being allocated at it. A line of cells is
+// far heavier than the string it replaced, and a fresh pane holds none of them.
 type scrollback struct {
-	rows     []row
+	rows     []shapedRow
 	start, n int
+
+	// pushed counts every line ever appended, evicted ones included. A scrolled-back
+	// view tracks it to stay on the same text: whether the ring grew or evicted, one
+	// more line pushed means the view steps one line further back. The two cases
+	// differ in whether Len moved, which is why Len cannot be used for this.
+	pushed uint64
 
 	cols int
 	gen  uint32
 }
 
-func newScrollback() *scrollback {
-	return &scrollback{rows: make([]row, maxScrollback), gen: 1}
-}
+func newScrollback() *scrollback { return &scrollback{gen: 1} }
 
 func (s *scrollback) Len() int { return s.n }
 
-// At is the i-th line, oldest first.
-func (s *scrollback) At(i int) *line { return &s.rows[(s.start+i)%len(s.rows)].line }
+// Gen is the generation a history row's cached glyphs have to match to be reused.
+func (s *scrollback) Gen() uint32 { return s.gen }
 
-// Append adds l as the newest line, evicting the oldest once the ring is full.
-func (s *scrollback) Append(l line) {
-	i := (s.start + s.n) % len(s.rows)
-	if s.n == len(s.rows) {
-		i = s.start
-		s.start = (s.start + 1) % len(s.rows)
-	} else {
+// Row is the i-th line, oldest first.
+func (s *scrollback) Row(i int) *shapedRow { return &s.rows[(s.start+i)%len(s.rows)] }
+
+// Append adds cells as the newest line, evicting the oldest once the ring is full.
+//
+// The cells are copied: the caller is the screen, which recycles the row it has just
+// retired as its new bottom line.
+func (s *scrollback) Append(cells []cell) {
+	s.pushed++
+
+	var r *shapedRow
+	if s.n < maxScrollback {
+		// Still growing, so the ring has not wrapped yet: start is 0 and n indexes
+		// straight onto the end.
+		s.rows = append(s.rows, shapedRow{})
 		s.n++
+		r = &s.rows[s.n-1]
+	} else {
+		r = &s.rows[s.start]
+		s.start = (s.start + 1) % len(s.rows)
 	}
-	r := &s.rows[i]
-	r.line, r.gids, r.gen = l, r.gids[:0], 0
+	r.cells = append(r.cells[:0], cells...)
+	r.gids, r.gen = r.gids[:0], 0
 }
 
-// setCols invalidates the cache when the grid width changes: the cached runs are
-// clipped to cols.
+// reset drops the history. ED 3 asks for this — it is what `clear` sends.
+func (s *scrollback) reset() {
+	s.rows, s.start, s.n = s.rows[:0], 0, 0
+	s.gen = nextGen(s.gen)
+}
+
+// setCols invalidates every row at once when the grid width changes: the renderer
+// clips a history line to the pane's columns, so its glyphs were shaped for a width.
 func (s *scrollback) setCols(cols int) {
 	if cols != s.cols {
-		s.cols, s.gen = cols, s.gen+1
+		s.cols, s.gen = cols, nextGen(s.gen)
 	}
-}
-
-// shaped is the i-th line's glyphs, run through shape on the first ask since the
-// last width change. shape appends to the row's own slice, so a second pass over
-// the same history allocates nothing.
-func (s *scrollback) shaped(i int, shape func(l *line, dst []font.GID) []font.GID) []font.GID {
-	r := &s.rows[(s.start+i)%len(s.rows)]
-	if r.gen != s.gen {
-		r.gids = shape(&r.line, r.gids[:0])
-		r.gen = s.gen
-	}
-	return r.gids
 }

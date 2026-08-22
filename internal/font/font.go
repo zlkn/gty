@@ -77,13 +77,13 @@ type FontManager struct {
 	faces [NumStyles]*face
 }
 
-// NewManager builds all four faces at size points and dpi dots per inch, derives
-// the terminal cell box, then bakes one atlas covering every style.
+// NewManager builds all four faces at size points and dpi dots per inch, derives the
+// terminal cell box, then lays out one atlas covering every style.
 //
-// ttf is indexed by Style. The bake is unconditional: a couple of MiB and a few
-// milliseconds once, which buys away any need for laziness, a per-glyph cache,
-// or a mutex.
-func NewManager(ttf [NumStyles][]byte, family string, size, dpi float64) (*FontManager, error) {
+// ttf is indexed by Style. maxTexture is the device's largest 2D texture dimension,
+// which bounds the atlas. Only the glyphs a terminal needs in its first frame are
+// rasterised here; see Atlas.
+func NewManager(ttf [NumStyles][]byte, family string, size, dpi float64, maxTexture int) (*FontManager, error) {
 	// Same arithmetic as opentype.NewFace, so metrics here and any face built
 	// from the same file agree on ppem.
 	ppem := fixed.Int26_6(0.5 + (size * dpi * 64 / 72))
@@ -115,7 +115,7 @@ func NewManager(ttf [NumStyles][]byte, family string, size, dpi float64) (*FontM
 	}
 
 	var err error
-	if fm.Atlas, err = BakeAtlas(fm); err != nil {
+	if fm.Atlas, err = BakeAtlas(fm, maxTexture); err != nil {
 		return nil, err
 	}
 	return fm, nil

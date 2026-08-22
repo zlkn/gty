@@ -221,3 +221,182 @@ func TestGlyphUVRoundTrip(t *testing.T) {
 		t.Errorf("GlyphUV(%d) reports a hit for an unbaked glyph", unbaked)
 	}
 }
+
+// TestAtlasBakesOnDemand: the sheet holds printable ASCII and the GSUB outputs after
+// NewManager, and grows into the rest of the face as glyphs are asked for. Everything
+// outside that eager set used to render as nothing at all — Cyrillic included.
+func TestAtlasBakesOnDemand(t *testing.T) {
+	fm := newTestManager(t)
+	a := fm.Atlas
+
+	gid, ok := fm.GlyphIndex(Regular, 'ж')
+	if !ok {
+		t.Fatal("the face has no Cyrillic; pick another probe")
+	}
+	k := Key{Regular, gid}
+
+	if _, in := a.Slot(k); in {
+		t.Fatal("Cyrillic was baked eagerly; this test proves nothing")
+	}
+	before := len(a.Glyphs())
+
+	u, v := a.Ensure(k)
+	if _, in := a.Slot(k); !in {
+		t.Fatal("Ensure did not bake the glyph")
+	}
+	if len(a.Glyphs()) != before+1 {
+		t.Errorf("the sheet went from %d glyphs to %d, want one more", before, len(a.Glyphs()))
+	}
+
+	slot, _ := a.Slot(k)
+	if box, inked := inkBox(a.Img, slot); !inked {
+		t.Error("the glyph baked blank")
+	} else if !box.Sub(slot.Min).In(image.Rect(0, 0, a.SlotW, a.SlotH)) {
+		t.Errorf("ink %v escapes the slot: the padding was measured over too small a set", box)
+	}
+
+	// Asking twice must not bake twice.
+	u2, v2 := a.Ensure(k)
+	if u != u2 || v != v2 || len(a.Glyphs()) != before+1 {
+		t.Error("a second Ensure re-baked the glyph")
+	}
+}
+
+// TestAtlasNotdefBox: a rune the face cannot draw gets a visible box. Drawing nothing
+// makes a missing character indistinguishable from a space, which is how a prompt full
+// of Nerd Font icons came to look merely empty.
+func TestAtlasNotdefBox(t *testing.T) {
+	fm := newTestManager(t)
+	a := fm.Atlas
+
+	u, v := a.Ensure(Key{Regular, 0})
+	slot := image.Rect(0, 0, a.SlotW, a.SlotH).
+		Add(image.Pt(int(u*float32(a.Img.Rect.Dx())+0.5), int(v*float32(a.Img.Rect.Dy())+0.5)))
+
+	box, inked := inkBox(a.Img, slot)
+	if !inked {
+		t.Fatal("the replacement slot is blank")
+	}
+	box = box.Sub(slot.Min)
+	if box.Dx() < fm.CellWidth/2 || box.Dy() < fm.CellHeight/2 {
+		t.Errorf("the replacement box is %v, want something the size of a cell", box)
+	}
+
+	// Hollow, so a run of missing glyphs does not read as a solid bar.
+	mid := image.Pt(slot.Min.X+a.PadLeft+fm.CellWidth/2, slot.Min.Y+a.PadTop+fm.CellHeight/2)
+	if a.Img.AlphaAt(mid.X, mid.Y).A != 0 {
+		t.Error("the replacement box is filled, want it hollow")
+	}
+}
+
+// TestAtlasLazyInkFitsEverySlot walks the whole face through Ensure. This is what the
+// padding measurement is for: a glyph baked later cannot resize the grid it lands in,
+// so every one of them has to fit the slot chosen at startup.
+func TestAtlasLazyInkFitsEverySlot(t *testing.T) {
+	fm := newTestManager(t)
+	a := fm.Atlas
+	slotBox := image.Rect(0, 0, a.SlotW, a.SlotH)
+
+	for gid := range GID(fm.Font(Regular).NumGlyphs()) {
+		k := Key{Regular, gid}
+		a.Ensure(k)
+		slot, in := a.Slot(k)
+		if !in {
+			continue // a glyph the rasterizer refused; bake reports that by not adding it
+		}
+		if box, inked := inkBox(a.Img, slot); inked && !box.Sub(slot.Min).In(slotBox) {
+			t.Fatalf("glyph %d: ink %v escapes its %v slot", gid, box.Sub(slot.Min), slotBox)
+		}
+	}
+}
+
+// TestAtlasTracksDirtySlots: the renderer copies up only what changed, so the sheet has
+// to say what that was.
+func TestAtlasTracksDirtySlots(t *testing.T) {
+	fm := newTestManager(t)
+	a := fm.Atlas
+
+	if n := len(a.TakeDirty()); n == 0 {
+		t.Fatal("nothing was reported dirty after the eager bake")
+	}
+	if n := len(a.TakeDirty()); n != 0 {
+		t.Errorf("%d slots still dirty after taking them", n)
+	}
+
+	gid, _ := fm.GlyphIndex(Regular, 'д')
+	a.Ensure(Key{Regular, gid})
+	if got := a.TakeDirty(); len(got) != 1 {
+		t.Errorf("one new glyph reported %d dirty slots, want 1", len(got))
+	}
+}
+
+// TestAtlasGrowsRows: the sheet is laid out for the glyphs a first frame needs, not for
+// the whole face — a Nerd Font-patched file has 12,608 glyphs a style, and a slot
+// apiece would be wider than any GPU will allocate. It gains rows instead, and nothing
+// already on it may move when it does.
+func TestAtlasGrowsRows(t *testing.T) {
+	fm := newTestManager(t)
+	a := fm.Atlas
+
+	// A glyph baked before the sheet grows, to check it afterwards.
+	probe := Key{Regular, mustGlyph(t, fm, 'ж')}
+	a.Ensure(probe)
+	slotBefore, _ := a.Slot(probe)
+	inkBefore, _ := inkBox(a.Img, slotBefore)
+
+	startRows, startCols := a.Rows, a.Cols
+	free := a.Cols*a.Rows - len(a.Glyphs())
+	for gid := GID(1); gid < faceGlyphs(fm.Font(Regular)) && a.Rows == startRows; gid++ {
+		a.Ensure(Key{Regular, gid})
+	}
+	if a.Rows == startRows {
+		t.Fatalf("the face ran out before the sheet did: %d slots free of %d", free, a.Cols*a.Rows)
+	}
+
+	if a.Cols != startCols {
+		t.Errorf("growing changed the column count from %d to %d; every slot would move", startCols, a.Cols)
+	}
+	if got, want := a.Img.Rect.Dy(), a.Rows*a.SlotH; got != want {
+		t.Errorf("the image is %d px tall for %d rows, want %d", got, a.Rows, want)
+	}
+	if a.Rows > a.maxRows {
+		t.Errorf("grew to %d rows, past the %d the texture limit allows", a.Rows, a.maxRows)
+	}
+
+	slotAfter, _ := a.Slot(probe)
+	if slotAfter != slotBefore {
+		t.Fatalf("the probe moved from %v to %v", slotBefore, slotAfter)
+	}
+	if inkAfter, _ := inkBox(a.Img, slotAfter); inkAfter != inkBefore {
+		t.Errorf("the probe's ink is %v after growing, was %v", inkAfter, inkBefore)
+	}
+}
+
+// TestAtlasStopsAtTheTextureLimit: when there is genuinely no room left, a glyph falls
+// back to the replacement box rather than scribbling outside the sheet.
+func TestAtlasStopsAtTheTextureLimit(t *testing.T) {
+	fm := newTestManager(t)
+	a := fm.Atlas
+
+	a.maxRows = a.Rows // pin it shut
+	a.free = a.Cols * a.Rows
+
+	before := len(a.Glyphs())
+	u, v := a.Ensure(Key{Regular, mustGlyph(t, fm, 'ю')})
+	nu, nv := a.Ensure(Key{Regular, 0})
+	if u != nu || v != nv {
+		t.Errorf("a glyph past the limit drew from %v,%v, want the replacement box at %v,%v", u, v, nu, nv)
+	}
+	if len(a.Glyphs()) != before {
+		t.Error("a glyph was recorded as baked with nowhere to put it")
+	}
+}
+
+func mustGlyph(t *testing.T, fm *FontManager, r rune) GID {
+	t.Helper()
+	gid, ok := fm.GlyphIndex(Regular, r)
+	if !ok {
+		t.Fatalf("the face has no glyph for %q", r)
+	}
+	return gid
+}

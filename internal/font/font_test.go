@@ -15,24 +15,36 @@ const (
 	testSize = 14.0
 	testDPI  = 72.0
 
+	// testMaxTexture is the WebGPU baseline, which every device meets.
+	testMaxTexture = 8192
+
 	wantCellWidth  = 8
 	wantCellHeight = 19
 	wantAscent     = 15
 )
+
+// testFace names the files the tests load, mirroring what text.go embeds. Spelled out
+// rather than derived from Style.String(), because the mapping is a choice: this build
+// takes Light as its regular weight and Regular as its bold.
+var testFace = [NumStyles]string{
+	Regular:    "../../assets/JetBrainsMonoNerdFontMono-Light.ttf",
+	Bold:       "../../assets/JetBrainsMonoNerdFontMono-Regular.ttf",
+	Italic:     "../../assets/JetBrainsMonoNerdFontMono-LightItalic.ttf",
+	BoldItalic: "../../assets/JetBrainsMonoNerdFontMono-Italic.ttf",
+}
 
 func newTestManager(t *testing.T) *FontManager {
 	t.Helper()
 
 	var faces [NumStyles][]byte
 	for i := range NumStyles {
-		style := Style(i)
-		ttf, err := os.ReadFile("../../assets/JetBrainsMono-" + style.String() + ".ttf")
+		ttf, err := os.ReadFile(testFace[Style(i)])
 		if err != nil {
 			t.Fatal(err)
 		}
-		faces[style] = ttf
+		faces[Style(i)] = ttf
 	}
-	fm, err := NewManager(faces, "Monospace", testSize, testDPI)
+	fm, err := NewManager(faces, "Monospace", testSize, testDPI, testMaxTexture)
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}

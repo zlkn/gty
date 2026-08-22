@@ -134,10 +134,16 @@ func newRects(device *wgpu.Device, queue *wgpu.Queue, format wgpu.TextureFormat)
 	return r, nil
 }
 
-// Set replaces the quad list. Empty rects are dropped: a split too narrow to
-// divide produces them.
-func (r *rects) Set(quads []image.Rectangle, color [4]float32) {
-	r.instances = r.instances[:0]
+// Reset drops the quad list.
+func (r *rects) Reset() { r.instances = r.instances[:0] }
+
+// Add appends one group of quads in a single colour. Groups differ only by colour —
+// dividers, then each pane's cursor — so they share one buffer and one upload rather
+// than a draw call each.
+//
+// Empty rects are dropped: a split too narrow to divide produces them, and so does a
+// cursor shape clamped into a degenerate cell.
+func (r *rects) Add(quads []image.Rectangle, color [4]float32) {
 	for _, q := range quads {
 		if q.Empty() {
 			continue
@@ -147,10 +153,37 @@ func (r *rects) Set(quads []image.Rectangle, color [4]float32) {
 			color: color,
 		})
 	}
-	r.upload()
 }
 
-func (r *rects) upload() {
+// quad is a rectangle with its own colour, for the callers that build lists where
+// every entry differs — the painted cell backgrounds, mostly.
+type quad struct {
+	rect  image.Rectangle
+	color [4]float32
+}
+
+// AddQuads appends quads that each carry their own colour.
+func (r *rects) AddQuads(qs []quad) {
+	for _, q := range qs {
+		if q.rect.Empty() {
+			continue
+		}
+		r.instances = append(r.instances, rectInstance{
+			rect:  [4]float32{float32(q.rect.Min.X), float32(q.rect.Min.Y), float32(q.rect.Dx()), float32(q.rect.Dy())},
+			color: q.color,
+		})
+	}
+}
+
+// Set replaces the whole list with one group.
+func (r *rects) Set(quads []image.Rectangle, color [4]float32) {
+	r.Reset()
+	r.Add(quads, color)
+	r.Upload()
+}
+
+// Upload grows the instance buffer if the frame needs more room, then writes it.
+func (r *rects) Upload() {
 	if need := len(r.instances); need > r.bufCap {
 		buf, n, err := growBuffer(r.device, "Rect Instances", r.vertexBuf,
 			wgpu.BufferUsageVertex|wgpu.BufferUsageCopyDst, r.bufCap, need, unsafe.Sizeof(rectInstance{}))
