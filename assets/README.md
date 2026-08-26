@@ -6,6 +6,26 @@ For more information see:
 * https://github.com/ryanoasis/nerd-fonts/
 * https://github.com/ryanoasis/nerd-fonts/releases/latest/
 
+# What ships and what does not
+
+Only the four JetBrains Mono NFM faces `text.go` embeds are in the binary: the patched
+family carries the ligatures and the icons, and everything else a session turns out to
+need is already on the machine — `internal/font` searches the installed fonts for a
+rune nothing loaded has.
+
+The other two files here are test fixtures, so the tests do not depend on what happens
+to be installed:
+
+* `SymbolsNerdFontMono-Regular.ttf` — icons, no standard dingbats.
+* `DejaVuSansMono.ttf` — dingbats, no icons. Copied from the Debian `fonts-dejavu-mono`
+  package; license in `LICENSE-DejaVu.txt` (Bitstream Vera + Arev), upstream
+  https://dejavu-fonts.github.io/
+
+Between them they are the two halves of the fallback problem, which is what makes them
+useful to test with: the family has 14 of the 192 dingbats, so `✔` (U+2714) — what a
+shell prompt reports a command with — needs a face from outside the Nerd Font world
+entirely.
+
 # JetBrains Mono
 
 JetBrains Mono: a typeface made for developers
