@@ -1,0 +1,15 @@
+# Deliberately unlike the built-in theme: a test that passes against the defaults is
+# not testing the file.
+[colors]
+background = "#102030"
+foreground = "#a0b0c0"
+selection = "#40506080"
+
+ansi = [
+  "#000001", "#000002", "#000003", "#000004",
+  "#000005", "#000006", "#000007", "#000008",
+]
+bright = [
+  "#000011", "#000012", "#000013", "#000014",
+  "#000015", "#000016", "#000017", "#000018",
+]

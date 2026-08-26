@@ -1,0 +1,42 @@
+# gty config. Copy to $XDG_CONFIG_HOME/gty/config.toml (~/.config/gty/config.toml) and
+# keep only the keys you want to change: every one of them is optional, and what is not
+# here stays at the built-in default shown below.
+#
+# Colours are "#rrggbb" or "#rrggbbaa". The ANSI palette carries no alpha.
+
+# The face the grid is drawn with.
+#
+# family is looked up among the installed fonts, by the name fc-list would show, and
+# its bold and italic are found alongside it. Leave it out for the embedded JetBrains
+# Mono, which is Nerd Font-patched: ligatures and the icons a prompt draws.
+#
+# Whatever is named here, the embedded family stays behind it as a fallback, and behind
+# that anything installed on the machine — a rune the font has no glyph for is drawn
+# from the first face that has one, so ✔ and ⬢ and 中 come out as themselves rather
+# than as a box.
+[font]
+family = "JetBrains Mono"
+size = 16
+
+[colors]
+background = "#f2f2f2"
+foreground = "#424242"
+
+# selectionColor also paints the dividers between panes.
+selection = "#d9d9d9"
+
+# The eight normal colours: black, red, green, yellow, blue, magenta, cyan, white.
+#
+# The ends swap on a light background: black is a light shade, and white is the ink a
+# program gets when it asks for the brightest colour it knows of.
+ansi = [
+  "#d1d1d1", "#b81a6b", "#1e763c", "#8d5b00",
+  "#015493", "#75228e", "#007474", "#424242",
+]
+
+# The same eight, bright — which here means the same six chromatic colours over again:
+# there is nothing to brighten into on paper, and lightening them only costs contrast.
+bright = [
+  "#57606a", "#b81a6b", "#1e763c", "#8d5b00",
+  "#015493", "#75228e", "#007474", "#085157",
+]

@@ -49,11 +49,15 @@ type Shaper struct {
 	props harfbuzz.SegmentProperties
 }
 
-func NewShaper(ttf []byte) (*Shaper, error) {
-	face, err := gotext.ParseTTF(bytes.NewReader(ttf))
+func NewShaper(src Source) (*Shaper, error) {
+	faces, err := gotext.ParseTTC(bytes.NewReader(src.TTF))
 	if err != nil {
 		return nil, fmt.Errorf("shaper parse face: %w", err)
 	}
+	if int(src.Index) >= len(faces) {
+		return nil, fmt.Errorf("shaper: face %d of a %d-face collection", src.Index, len(faces))
+	}
+	face := faces[src.Index]
 	return &Shaper{
 		face: face,
 		font: harfbuzz.NewFont(face),

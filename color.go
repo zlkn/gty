@@ -38,17 +38,27 @@ func (c color) resolve(dflt [4]float32) [4]float32 {
 	return dflt
 }
 
-// base16 is the named end of the palette, picked to sit with the theme rather than
-// taken from xterm's washed-out defaults.
+// base16 is the named end of the palette, for a light background — which means the two
+// ends swap roles: ANSI black is a light shade, and ANSI white is the ink a program gets
+// when it asks for the brightest thing it knows of.
+//
+// The six chromatic colours are dark enough to read on the paper, 5:1 and better. The
+// palette this replaces was picked for a #1a1b20 background and left behind when the
+// theme went light: on #f2f2f2 its green sat at 1.80:1 and its bright white at 1.12:1,
+// so a coloured ls listing was barely there and the brightest colour was invisible.
+//
+// Bright repeats them, black and white apart. A light theme has no headroom to brighten
+// into, and lightening a colour here would only take contrast away.
 var base16 = [16]uint32{
-	0x1a1b20, 0xe06c75, 0x98c379, 0xe5c07b, 0x61afef, 0xc678dd, 0x56b6c2, 0xd9dee7,
-	0x5c6370, 0xef8b93, 0xb3d99a, 0xf0d3a0, 0x8cc4f5, 0xd79ae8, 0x7fcdd7, 0xffffff,
+	0xd1d1d1, 0xb81a6b, 0x1e763c, 0x8d5b00, 0x015493, 0x75228e, 0x007474, 0x424242,
+	0x57606a, 0xb81a6b, 0x1e763c, 0x8d5b00, 0x015493, 0x75228e, 0x007474, 0x085157,
 }
 
 // palette is the 256-colour table: the sixteen named colours, then the 6x6x6 cube and
 // the 24-step grey ramp exactly as xterm defines them, so an index means the same here
-// as everywhere else.
-var palette = buildPalette()
+// as everywhere else. refreshTheme fills it, because the config file may replace the
+// named end of it.
+var palette [256][4]float32
 
 func buildPalette() [256][4]float32 {
 	var p [256][4]float32

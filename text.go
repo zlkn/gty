@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"image"
 	"os"
+	"strings"
 	"unsafe"
 
 	"github.com/oliverbestmann/webgpu/wgpu"
@@ -15,8 +16,13 @@ import (
 //go:embed text.wgsl
 var textShader string
 
-// Only the four faces a terminal needs are embedded; assets/ holds the whole
-// family, and the NL ("no ligatures") variants must not be used here.
+// The embedded family: four styles of Nerd Font-patched JetBrains Mono, which is the
+// default primary and, when the config names another font, the first fallback. It is
+// the only font in the binary — a patched face is what carries the ligatures and the
+// icons, and anything else a session turns out to need is on the machine already.
+//
+// assets/ holds the whole family, and the NL ("no ligatures") variants must not be
+// used here.
 var (
 	//go:embed assets/JetBrainsMonoNerdFontMono-Light.ttf
 	regularTTF []byte
@@ -27,6 +33,9 @@ var (
 	//go:embed assets/JetBrainsMonoNerdFontMono-Italic.ttf
 	boldItalicTTF []byte
 )
+
+// embeddedFamily is what the embedded faces are called, in the config and in messages.
+const embeddedFamily = "JetBrains Mono"
 
 // initialInstances is the glyph buffer's starting capacity; Layout grows it.
 const initialInstances = 1 << 14
@@ -52,8 +61,9 @@ type text struct {
 	sampler   *wgpu.Sampler
 
 	instances []instance
-	bufCap    int // vertexBuf capacity, in instances
-	texRows   int // the sheet height the texture was created at
+	bufCap    int  // vertexBuf capacity, in instances
+	texRows   int  // the sheet height the texture was created at
+	srgb      bool // whether the target encodes what the shader writes; see srgb.go
 
 	// Scratch reused across frames: runes for the clipped row, gids for the cursor
 	// row, which is shaped outside the scrollback's cache.
@@ -69,12 +79,6 @@ func newText(device *wgpu.Device, queue *wgpu.Queue, format wgpu.TextureFormat, 
 		}
 	}()
 
-	faces := [font.NumStyles][]byte{
-		font.Regular:    regularTTF,
-		font.Bold:       boldTTF,
-		font.Italic:     italicTTF,
-		font.BoldItalic: boldItalicTTF,
-	}
 	// The atlas is laid out to the device's ceiling and grows within it, so it has to
 	// be told what that ceiling is.
 	maxTexture := int(device.GetLimits().MaxTextureDimension2D)
@@ -82,11 +86,11 @@ func newText(device *wgpu.Device, queue *wgpu.Queue, format wgpu.TextureFormat, 
 		maxTexture = 8192 // undefined or absurd; the WebGPU baseline
 	}
 
-	fm, err := font.NewManager(faces, "JetBrains Mono", sizePt, 72, maxTexture)
+	fm, err := newFontManager(sizePt, maxTexture)
 	if err != nil {
 		return nil, err
 	}
-	t = &text{device: device, queue: queue, fm: fm}
+	t = &text{device: device, queue: queue, fm: fm, srgb: isSrgbFormat(format)}
 	if err = t.makeAtlasTexture(); err != nil {
 		return t, err
 	}
@@ -181,6 +185,58 @@ func newText(device *wgpu.Device, queue *wgpu.Queue, format wgpu.TextureFormat, 
 		return t, err
 	}
 	return t, nil
+}
+
+// newFontManager loads the faces the grid is drawn with.
+//
+// The chain is: the font the config named, then the embedded family, then whatever the
+// machine has. The middle link is the one that makes the config safe to use — the
+// embedded face is patched, so a plain font from the config still gets its icons and
+// its box drawing from something designed for a terminal, before the search widens to
+// fonts that were not.
+//
+// A config font that cannot be loaded is a warning, not a failure: the terminal comes
+// up on the embedded family instead. That covers a typo in the name as well as a font
+// whose four styles disagree about the cell, which is fatal to a grid and not obvious
+// from the file name.
+func newFontManager(sizePt float64, maxTexture int) (*font.FontManager, error) {
+	warn := func(s string) { fmt.Fprintln(os.Stderr, "gty: font:", s) }
+	lib := &font.Library{Warn: warn}
+	embedded := [font.NumStyles]font.Source{
+		font.Regular:    {Name: embeddedFamily, TTF: regularTTF},
+		font.Bold:       {Name: embeddedFamily, TTF: boldTTF},
+		font.Italic:     {Name: embeddedFamily, TTF: italicTTF},
+		font.BoldItalic: {Name: embeddedFamily, TTF: boldItalicTTF},
+	}
+	opts := font.Options{
+		Styles: embedded, Family: embeddedFamily,
+		Finder: lib,
+		Size:   sizePt, DPI: 72, MaxTexture: maxTexture,
+		Warn: warn,
+	}
+
+	if fontFamily != "" && !strings.EqualFold(fontFamily, embeddedFamily) {
+		styles, missing, err := lib.Family(fontFamily)
+		switch {
+		case err != nil:
+			warn(fmt.Sprintf("%v; using %s", err, embeddedFamily))
+		default:
+			for _, style := range missing {
+				warn(fmt.Sprintf("%s has no %s face; using its regular", fontFamily, style))
+			}
+			custom := opts
+			custom.Styles, custom.Family = styles, fontFamily
+			// The embedded family drops to the head of the chain, one face: a
+			// fallback is styleless, so bold and italic would only cost slots.
+			custom.Fallback = []font.Source{{Name: embeddedFamily, TTF: regularTTF}}
+			if fm, err := font.NewManager(custom); err == nil {
+				return fm, nil
+			} else {
+				warn(fmt.Sprintf("%s: %v; using %s", fontFamily, err, embeddedFamily))
+			}
+		}
+	}
+	return font.NewManager(opts)
 }
 
 // makeAtlasTexture creates the glyph texture at the sheet's current size and uploads
@@ -401,8 +457,11 @@ func (t *text) Layout(panes []*pane, focused *pane) {
 
 			y := originY + float32(i-from)*cellH - float32(a.PadTop)
 			for col, gid := range gids {
-				u, v := a.Ensure(font.Key{Style: styleAt(row.cells, col), GID: gid})
-				c, _ := cellAt(row.cells, col).colors()
+				cl := cellAt(row.cells, col)
+				// Resolve, not the gid alone: a rune the family has no glyph for
+				// shapes to 0, and the fallback chain is where it is drawn from.
+				u, v := a.Ensure(t.fm.Resolve(cl.Style, gid, cl.Rune))
+				c, _ := cl.colors()
 				if unfocused {
 					// Dim the ink and leave the paint: brightness is the focus cue, and
 					// darkening a background only makes it look like a hole.
@@ -501,7 +560,7 @@ func (t *text) Draw(pass *wgpu.RenderPassEncoder, panes []*pane, viewportW, view
 		return
 	}
 	t.queue.WriteBuffer(t.uniform, 0, wgpu.ToBytes([]float32{
-		float32(viewportW), float32(viewportH), 0, 0,
+		float32(viewportW), float32(viewportH), srgbFlag(t.srgb), coverageExp,
 	}))
 	pass.SetPipeline(t.pipeline)
 	pass.SetBindGroup(0, t.bindGroup, nil)

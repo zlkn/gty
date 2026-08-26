@@ -17,7 +17,12 @@ import (
 const (
 	testWidth  = 576 // 576*4 = 2304 bytes/row, a multiple of the required 256
 	testHeight = 680
-	testFormat = wgpu.TextureFormatRGBA8Unorm
+	// An sRGB format, so the offscreen path exercises the same transfer function the
+	// window does — with RGBA8Unorm here the double encode that washed out every colour
+	// in the window could not be reproduced offscreen at all. RGBA rather than BGRA
+	// because the read-back is an *image.RGBA: a BGRA target would quietly swap R and B
+	// under every .R in this file.
+	testFormat = wgpu.TextureFormatRGBA8UnormSrgb
 )
 
 // newTestGPU skips the test on a machine with no adapter.
@@ -117,7 +122,7 @@ func renderOffscreen(t *testing.T, device *wgpu.Device, queue *wgpu.Queue, draw 
 			View:       view,
 			LoadOp:     wgpu.LoadOpClear,
 			StoreOp:    wgpu.StoreOpStore,
-			ClearValue: background,
+			ClearValue: clearValue(backgroundRGBA, isSrgbFormat(testFormat)),
 		}},
 	})
 	draw(pass)
@@ -153,12 +158,64 @@ func renderOffscreen(t *testing.T, device *wgpu.Device, queue *wgpu.Queue, draw 
 	return &image.RGBA{Pix: pix, Stride: bytesPerRow, Rect: image.Rect(0, 0, testWidth, testHeight)}
 }
 
-// litPixels counts pixels brighter than the background.
-func litPixels(img *image.RGBA, r image.Rectangle) int {
-	n := 0
+// Pixels are four bytes rather than a color.RGBA: this package has a colour type of its
+// own, so image/color cannot be imported here without an alias, and the byte quadruple
+// reads the same way the renderer's own [4]float32 does.
+
+func pixelAt(img *image.RGBA, x, y int) [4]uint8 {
+	c := img.RGBAAt(x, y)
+	return [4]uint8{c.R, c.G, c.B, c.A}
+}
+
+// pixelOf is a renderer colour as it lands in memory. On an sRGB target a pixel of full
+// coverage and opaque alpha comes back as the byte that was configured — the GPU's encode
+// and the shader's decode cancel — which is what makes exact assertions possible at all.
+func pixelOf(c [4]float32) [4]uint8 {
+	q := func(v float32) uint8 { return uint8(min(max(v, 0), 1)*255 + 0.5) }
+	return [4]uint8{q(c[0]), q(c[1]), q(c[2]), q(c[3])}
+}
+
+// near compares two pixels channel by channel, allowing tol counts of slack: two
+// implementations of the sRGB curve (float64 in Go, f32 in WGSL) and the GPU's own encode
+// do not have to agree to the last bit.
+func near(got, want [4]uint8, tol int) bool {
+	for i := range got {
+		if int(got[i])-int(want[i]) > tol || int(want[i])-int(got[i]) > tol {
+			return false
+		}
+	}
+	return true
+}
+
+// Ink is measured as distance from the background, not as brightness. Brightness only
+// stands in for "something was drawn" on a dark theme; on a light one the brightest thing
+// on screen is the paper, and every one of these metrics read backwards.
+
+// inkTol is how far a pixel may sit from the background and still count as untouched: the
+// transfer function's own rounding, and nothing more. Deliberately small — an antialiased
+// edge is meant to count as ink, and so is a colour some shader forgot to decode.
+const inkTol = 6
+
+// bgPixel is the untouched background, read from the top-left corner: padding means no
+// pane draws there. Sampled rather than computed, so the ink metrics do not depend on the
+// transfer function being right — that is TestSrgbTargetKeepsTheConfiguredColour's job.
+func bgPixel(img *image.RGBA) [4]uint8 { return pixelAt(img, 0, 0) }
+
+// inkDist is how far a pixel sits from the background, summed over the three channels.
+func inkDist(got, bg [4]uint8) int {
+	d := 0
+	for i := range 3 {
+		d += max(int(got[i])-int(bg[i]), int(bg[i])-int(got[i]))
+	}
+	return d
+}
+
+// inkPixels counts the pixels in r that differ from the background.
+func inkPixels(img *image.RGBA, r image.Rectangle) int {
+	bg, n := bgPixel(img), 0
 	for y := r.Min.Y; y < r.Max.Y; y++ {
 		for x := r.Min.X; x < r.Max.X; x++ {
-			if img.RGBAAt(x, y).R > 100 {
+			if inkDist(pixelAt(img, x, y), bg) > inkTol {
 				n++
 			}
 		}
@@ -166,14 +223,25 @@ func litPixels(img *image.RGBA, r image.Rectangle) int {
 	return n
 }
 
-// maxRed stands in for how bright the text is, which is what dimming changes.
-func maxRed(img *image.RGBA, r image.Rectangle) uint8 {
-	var m uint8
+// inkMass is the total distance from the background over r — how much ink the glyphs put
+// on the paper, which is what bending the coverage curve changes.
+func inkMass(img *image.RGBA, r image.Rectangle) int {
+	bg, sum := bgPixel(img), 0
 	for y := r.Min.Y; y < r.Max.Y; y++ {
 		for x := r.Min.X; x < r.Max.X; x++ {
-			if c := img.RGBAAt(x, y).R; c > m {
-				m = c
-			}
+			sum += inkDist(pixelAt(img, x, y), bg)
+		}
+	}
+	return sum
+}
+
+// maxInk is the largest distance from the background inside r — how visible whatever was
+// drawn there is, which is what dimming and a hollow cursor change.
+func maxInk(img *image.RGBA, r image.Rectangle) int {
+	bg, m := bgPixel(img), 0
+	for y := r.Min.Y; y < r.Max.Y; y++ {
+		for x := r.Min.X; x < r.Max.X; x++ {
+			m = max(m, inkDist(pixelAt(img, x, y), bg))
 		}
 	}
 	return m
@@ -298,14 +366,19 @@ func TestCursorRendersFilledAndHollow(t *testing.T) {
 	if !ok {
 		t.Fatal("the focused pane reports no cursor cell")
 	}
-	area, lit := cellW*cellH, litPixels(img, cell)
-	if lit*2 <= area {
-		t.Errorf("the focused cursor cell has %d of %d pixels lit; the block did not draw", lit, area)
+	area, ink := cellW*cellH, inkPixels(img, cell)
+	if ink*2 <= area {
+		t.Errorf("the focused cursor cell has %d of %d pixels drawn on; the block did not draw", ink, area)
 	}
-	// The 'M' punches about 36 of the 220 pixels back down to the background. A block
+	// The 'M' punches about 36 of the 220 pixels back to the background colour. A block
 	// drawn without the inversion would leave the cell solid.
-	if dark := area - lit; dark < 10 {
-		t.Errorf("only %d of %d pixels in the focused cursor cell are dark; the glyph was not inverted into the block", dark, area)
+	//
+	// Which also cross-checks the two routes a colour takes to the target: the glyph's
+	// interior is backgroundRGBA through text.wgsl, the clear is the same colour through
+	// clearValue. If only one of them decoded, those pixels would sit 7 counts off the
+	// clear and be counted as ink instead.
+	if blank := area - ink; blank < 10 {
+		t.Errorf("only %d of %d pixels in the focused cursor cell are the background; the glyph was not inverted into the block", blank, area)
 	}
 
 	cell, ok = unfocused.cursorCell(cellW, cellH)
@@ -313,7 +386,7 @@ func TestCursorRendersFilledAndHollow(t *testing.T) {
 		t.Fatal("the unfocused pane reports no cursor cell")
 	}
 	rim := image.Rect(cell.Min.X, cell.Min.Y, cell.Max.X, cell.Min.Y+cursorOutlineWidth)
-	inside, edge := maxRed(img, cell.Inset(cursorOutlineWidth)), maxRed(img, rim)
+	inside, edge := maxInk(img, cell.Inset(cursorOutlineWidth)), maxInk(img, rim)
 	if edge <= inside {
 		t.Errorf("the unfocused cursor peaks at %d on its rim and %d inside; want a hollow box", edge, inside)
 	}
@@ -336,7 +409,7 @@ func TestRenderToPNG(t *testing.T) {
 
 	panes, dividers := splitLayout(t, txt, testWidth, testHeight)
 	txt.Layout(panes, panes[0])
-	rct.Set(dividers, divider)
+	rct.Set(dividers, selectionColor)
 
 	a := txt.fm.Atlas
 	t.Logf("instances: %d | panes %d | dividers %d | atlas %dx%d = %d KiB | glyphs %d | slot %dx%d",
@@ -365,23 +438,37 @@ func TestRenderToPNG(t *testing.T) {
 		txt.Draw(pass, panes, testWidth, testHeight)
 	})
 
-	lit := litPixels(img, img.Rect)
-	t.Logf("pixels brighter than the background: %d", lit)
-	if lit == 0 {
+	ink := inkPixels(img, img.Rect)
+	t.Logf("pixels differing from the background: %d", ink)
+	if ink == 0 {
 		t.Error("nothing was drawn")
 	}
 
+	// A divider is an opaque quad of full coverage, so its pixel is exactly the colour
+	// it was given — which makes this a second, free guard against a missing decode.
 	div := dividers[0]
-	if c := img.RGBAAt(div.Min.X, testHeight/2).R; c < 40 {
-		t.Errorf("divider column %d has red %d, want the divider colour", div.Min.X, c)
+	if got, want := pixelAt(img, div.Min.X, testHeight/2), pixelOf(selectionColor); !near(got, want, 2) {
+		t.Errorf("divider column %d is %v, want the divider colour %v", div.Min.X, got, want)
 	}
 
-	// Both panes hold the same text, so this only passes if Layout dimmed the second.
-	focused := maxRed(img, panes[0].rect)
-	unfocused := maxRed(img, panes[1].rect)
-	t.Logf("brightest text: focused %d, unfocused %d", focused, unfocused)
-	if focused <= unfocused {
-		t.Errorf("focused pane peaks at %d, unfocused at %d; want the focused one brighter", focused, unfocused)
+	// Both panes hold the same text, so they can only differ if Layout dimmed the second.
+	// Only that they differ: dim() multiplies towards black, so on a light theme the
+	// dimmed pane sits further from the background rather than nearer, and asserting a
+	// direction here would be asserting the theme.
+	focused, unfocused := maxInk(img, panes[0].rect), maxInk(img, panes[1].rect)
+	t.Logf("ink furthest from the background: focused %d, unfocused %d", focused, unfocused)
+	if focused == unfocused {
+		t.Errorf("both panes peak at %d; the unfocused one was not dimmed", focused)
+	}
+
+	// The exact colours, which pixels cannot give: a glyph edge is a blend, and the
+	// extreme pixel of a light stem need not reach full coverage. Same reason
+	// TestCursorInvertsTheCellGlyph works on instances.
+	if got := txt.instances[panes[0].first].color; got != foreground {
+		t.Errorf("the focused pane draws in %v, want the foreground %v", got, foreground)
+	}
+	if got, want := txt.instances[panes[1].first].color, dim(foreground); got != want {
+		t.Errorf("the unfocused pane draws in %v, want it dimmed to %v", got, want)
 	}
 
 	f, _ := os.Create("/tmp/gty-frame.png")
@@ -554,7 +641,7 @@ func TestLayoutGrowsVertexBuffer(t *testing.T) {
 	img := renderOffscreen(t, device, queue, func(pass *wgpu.RenderPassEncoder) {
 		txt.Draw(pass, []*pane{p}, testWidth, testHeight)
 	})
-	if litPixels(img, img.Rect) == 0 {
+	if inkPixels(img, img.Rect) == 0 {
 		t.Error("nothing was drawn from the grown buffer")
 	}
 }
@@ -591,7 +678,7 @@ func TestNonASCIIRenders(t *testing.T) {
 	img := renderOffscreen(t, device, queue, func(pass *wgpu.RenderPassEncoder) {
 		txt.Draw(pass, []*pane{p}, testWidth, testHeight)
 	})
-	if lit := litPixels(img, img.Rect); lit == 0 {
+	if ink := inkPixels(img, img.Rect); ink == 0 {
 		t.Error("nothing was drawn")
 	}
 }
@@ -616,4 +703,85 @@ func TestMissingGlyphDrawsABox(t *testing.T) {
 	if got := txt.instances[1].uv; got[0] != u || got[1] != v {
 		t.Errorf("the missing rune drew from %v, want the replacement box at %v,%v", got[:2], u, v)
 	}
+}
+
+// TestSrgbTargetKeepsTheConfiguredColour is the regression for the double encode. A target
+// in an *UnormSrgb format applies the sRGB transfer function on write, so a colour handed
+// over already encoded comes back gamma-brightened: #424242 as #8b8b8b, #f2f2f2 as
+// #f9f9f9, the whole theme washed out. Both routes a colour can take to the target are
+// covered — the shader's, and the clear value's, which no shader ever sees.
+//
+// Full coverage and opaque alpha on purpose: no blending and no antialiasing enter the
+// expected values, so the only thing this can be measuring is the transfer function.
+func TestSrgbTargetKeepsTheConfiguredColour(t *testing.T) {
+	if !isSrgbFormat(testFormat) {
+		t.Fatalf("testFormat %v does not encode; the test proves nothing", testFormat)
+	}
+	device, queue := newTestGPU(t)
+	rct, err := newRects(device, queue, testFormat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(rct.release)
+
+	// Two quads: a colour straight from the theme, and one dim() computed from it. The
+	// second is the one that proves the decode applies to whatever the renderer works
+	// out at run time, not only to the literals in the theme.
+	rct.Reset()
+	rct.Add([]image.Rectangle{image.Rect(0, 0, testWidth, testHeight/4)}, foreground)
+	rct.Add([]image.Rectangle{image.Rect(0, testHeight/4, testWidth, testHeight/2)}, dim(foreground))
+	rct.Upload()
+	img := renderOffscreen(t, device, queue, func(pass *wgpu.RenderPassEncoder) {
+		rct.Draw(pass, testWidth, testHeight)
+	})
+
+	if got, want := pixelAt(img, testWidth/2, testHeight/8), pixelOf(foreground); !near(got, want, 2) {
+		t.Errorf("a quad of %v came back %v, want %v; a red of 0x8b means the shader is not decoding",
+			foreground, got, want)
+	}
+	if got, want := pixelAt(img, testWidth/2, testHeight*3/8), pixelOf(dim(foreground)); !near(got, want, 2) {
+		t.Errorf("a dimmed quad came back %v, want %v; dim() runs in sRGB and has to survive the decode",
+			got, want)
+	}
+	if got, want := pixelAt(img, testWidth/2, testHeight*3/4), pixelOf(backgroundRGBA); !near(got, want, 2) {
+		t.Errorf("the clear came back %v, want the configured background %v; 0xf9 means clearValue is not decoding",
+			got, want)
+	}
+}
+
+// TestCoverageGammaThickensOnlyTheEdges is the point of bending the coverage curve: the
+// partial pixels around a stem gain weight, and the fully covered core does not move. An
+// exponent leaves 0 and 1 alone, so anything else here means the curve is being applied
+// as a scale somewhere.
+func TestCoverageGammaThickensOnlyTheEdges(t *testing.T) {
+	device, queue := newTestGPU(t)
+	txt := newTestText(t, device, queue)
+
+	// Letters with plenty of edge: round sides and diagonals, not just uprights.
+	p := gridPane(1, image.Rect(0, 0, testWidth, 200), 8, 1, "eaoswzgm")
+	txt.Layout([]*pane{p}, p)
+	render := func(exp float32) *image.RGBA {
+		was := coverageExp
+		coverageExp = exp
+		defer func() { coverageExp = was }()
+		return renderOffscreen(t, device, queue, func(pass *wgpu.RenderPassEncoder) {
+			txt.Draw(pass, []*pane{p}, testWidth, testHeight)
+		})
+	}
+
+	plain, bent := render(1), render(coverageExponent(foreground, backgroundRGBA, 0))
+	row := image.Rect(0, 0, testWidth, 200)
+
+	if got, want := inkMass(bent, row), inkMass(plain, row); got <= want {
+		t.Errorf("bent coverage put %d of ink on the paper against %d untouched; the edges did not thicken",
+			got, want)
+	}
+	// The core is a fixed point: the darkest pixel in the row cannot move.
+	if got, want := maxInk(bent, row), maxInk(plain, row); got != want {
+		t.Errorf("the darkest pixel went from %d to %d; the curve moved the core, not the edges",
+			want, got)
+	}
+	t.Logf("ink mass %d -> %d (%.0f%%), darkest %d either way",
+		inkMass(plain, row), inkMass(bent, row),
+		100*float64(inkMass(bent, row))/float64(inkMass(plain, row)), maxInk(plain, row))
 }

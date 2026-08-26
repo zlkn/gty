@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"golang.org/x/image/font/sfnt"
 )
 
 // inkBox returns the bounding box of non-zero coverage inside region, in the
@@ -289,23 +291,31 @@ func TestAtlasNotdefBox(t *testing.T) {
 	}
 }
 
-// TestAtlasLazyInkFitsEverySlot walks the whole face through Ensure. This is what the
+// TestAtlasLazyInkFitsEverySlot walks whole faces through Ensure. This is what the
 // padding measurement is for: a glyph baked later cannot resize the grid it lands in,
-// so every one of them has to fit the slot chosen at startup.
+// so every one of them has to fit the slot chosen at startup. The fallback chain is in
+// here because every face in it is measured against a baseline of its own — their ink
+// is placed by numbers nothing else in the sheet uses.
 func TestAtlasLazyInkFitsEverySlot(t *testing.T) {
 	fm := newTestManager(t)
 	a := fm.Atlas
 	slotBox := image.Rect(0, 0, a.SlotW, a.SlotH)
 
-	for gid := range GID(fm.Font(Regular).NumGlyphs()) {
-		k := Key{Regular, gid}
-		a.Ensure(k)
-		slot, in := a.Slot(k)
-		if !in {
-			continue // a glyph the rasterizer refused; bake reports that by not adding it
-		}
-		if box, inked := inkBox(a.Img, slot); inked && !box.Sub(slot.Min).In(slotBox) {
-			t.Fatalf("glyph %d: ink %v escapes its %v slot", gid, box.Sub(slot.Min), slotBox)
+	faces := []Style{Regular}
+	for face := Fallback; int(face) < fm.NumFaces(); face++ {
+		faces = append(faces, face)
+	}
+	for _, style := range faces {
+		for gid := range GID(fm.Font(style).NumGlyphs()) {
+			k := Key{style, gid}
+			a.Ensure(k)
+			slot, in := a.Slot(k)
+			if !in {
+				continue // a glyph the rasterizer refused; bake reports that by not adding it
+			}
+			if box, inked := inkBox(a.Img, slot); inked && !box.Sub(slot.Min).In(slotBox) {
+				t.Fatalf("%s glyph %d: ink %v escapes its %v slot", style, gid, box.Sub(slot.Min), slotBox)
+			}
 		}
 	}
 }
@@ -399,4 +409,154 @@ func mustGlyph(t *testing.T, fm *FontManager, r rune) GID {
 		t.Fatalf("the face has no glyph for %q", r)
 	}
 	return gid
+}
+
+// TestFallbackMatchesTheFamily is what the fallback's fitted ppem and baseline are for.
+// The patched family carries the same icons, so the same rune can be drawn both ways
+// and the two compared: a pixel apart is the target, since the faces are different
+// designs, and anything more means the scale or the baseline is wrong.
+//
+// Powerline separators are left out deliberately. The patcher stretches those to the
+// full cell so a prompt's arrows tile with no seam; the standalone symbol face draws
+// them at their natural size, so from the fallback they come out cell-width but around
+// half the cell tall.
+func TestFallbackMatchesTheFamily(t *testing.T) {
+	o := testOptions(t)
+	o.Fallback = []Source{source(t, testSymbolFace)}
+	fm := newManager(t, o)
+	a := fm.Atlas
+	const tolerance = 1
+
+	// One rune per icon set the fallback is likely to be asked for: Font Awesome,
+	// Octicons, Devicons, Codicons, Material Design, and a plain Unicode symbol.
+	for _, r := range []rune{0xF015, 0xF07B, 0xF00C, 0xF0F3, 0xE62B, 0xE712, 0xE20F, 0xF1D0, 0xF09B, 0x2665} {
+		fam, ok := fm.GlyphIndex(Regular, r)
+		if !ok {
+			t.Errorf("%U: the family has no glyph, so there is nothing to compare against", r)
+			continue
+		}
+		fb := fm.Resolve(Regular, 0, r)
+		if fb.Style != Fallback {
+			t.Errorf("%U: the fallback has no glyph for it", r)
+			continue
+		}
+		a.Ensure(Key{Regular, fam})
+		a.Ensure(fb)
+
+		want, inked := slotInk(t, a, Key{Regular, fam})
+		if !inked {
+			t.Errorf("%U: the family baked it blank; pick another probe", r)
+			continue
+		}
+		got, inked := slotInk(t, a, fb)
+		if !inked {
+			t.Errorf("%U: the fallback baked blank", r)
+			continue
+		}
+		if !within(got, want, tolerance) {
+			t.Errorf("%U: fallback ink %v against the family's %v, off by more than %d px",
+				r, got, want, tolerance)
+		}
+	}
+}
+
+// within reports whether every edge of got sits inside tol px of want's.
+func within(got, want image.Rectangle, tol int) bool {
+	near := func(a, b int) bool { return a-b <= tol && b-a <= tol }
+	return near(got.Min.X, want.Min.X) && near(got.Min.Y, want.Min.Y) &&
+		near(got.Max.X, want.Max.X) && near(got.Max.Y, want.Max.Y)
+}
+
+// TestFallbackDingbatSitsInItsCell: the second link is a text face, not an icon face,
+// and it is fitted by the same rule. Its glyphs have to land inside the cell they are
+// drawn in — a dingbat that overhangs would paint over the character next door, and
+// one drawn at the wrong scale is the bug this face was added to fix.
+func TestFallbackDingbatSitsInItsCell(t *testing.T) {
+	fm := newTestManager(t)
+	a := fm.Atlas
+
+	key := fm.Resolve(Regular, 0, testDingbat)
+	if key.Style < Fallback {
+		t.Fatalf("%U came from %s, want a face from the chain", rune(testDingbat), key.Style)
+	}
+	a.Ensure(key)
+
+	box, inked := slotInk(t, a, key)
+	if !inked {
+		t.Fatalf("%U baked blank", rune(testDingbat))
+	}
+	// The cell inside the slot, widened by the bleed the family itself is allowed.
+	cell := image.Rect(a.PadLeft, a.PadTop, a.PadLeft+fm.CellWidth+a.PadRight, a.PadTop+fm.CellHeight)
+	if !box.In(cell) {
+		t.Errorf("%U: ink %v leaves the cell %v", rune(testDingbat), box, cell)
+	}
+	// Against the family's own light ✓, which is the same mark at the same size: a
+	// face scaled by the wrong em fits the cell just as well and reads as nothing.
+	light, ok := fm.GlyphIndex(Regular, 0x2713)
+	if !ok {
+		t.Fatal("the family has no ✓ U+2713 to compare against")
+	}
+	a.Ensure(Key{Regular, light})
+	want, inked := slotInk(t, a, Key{Regular, light})
+	if !inked {
+		t.Fatal("the family baked ✓ blank")
+	}
+	if !within(box, want, 2) {
+		t.Errorf("%U from the fallback is %v against the family's ✓ at %v", rune(testDingbat), box, want)
+	}
+	t.Logf("%U ink %v, the family's ✓ %v, cell %v", rune(testDingbat), box, want, cell)
+}
+
+// TestFitShrinksAWideGlyph: a fallback face is fitted to the cell by its median glyph,
+// so its outliers are still too big — a ligature several cells wide, a CJK ideograph,
+// whatever the machine hands over. Those are shrunk one at a time as they are baked,
+// because the slot was measured before the face existed and cannot grow to suit it.
+//
+// The probe is the family itself, loaded as a fallback: its ligature glyphs reach across
+// four cells, which is the same shape of problem a system face turns up with, and it is
+// in the repository rather than on the machine.
+func TestFitShrinksAWideGlyph(t *testing.T) {
+	o := testOptions(t)
+	o.Fallback = []Source{source(t, testFace[Regular])}
+	fm := newManager(t, o)
+	a := fm.Atlas
+
+	f := fm.Font(Fallback)
+	ppem, _, _ := fm.FaceMetrics(Fallback)
+	var buf sfnt.Buffer
+	var wide GID
+	var wideW int
+	for gid := GID(1); gid < faceGlyphs(f); gid++ {
+		b, _, err := f.GlyphBounds(&buf, gid, ppem, Hinting)
+		if err != nil {
+			continue
+		}
+		if w := (b.Max.X - b.Min.X).Ceil(); w > 2*fm.CellWidth {
+			wide, wideW = gid, w
+			break
+		}
+	}
+	if wide == 0 {
+		t.Skip("no glyph in the face is wider than two cells")
+	}
+
+	k := Key{Fallback, wide}
+	a.Ensure(k)
+	box, inked := slotInk(t, a, k)
+	if !inked {
+		t.Fatalf("glyph %d baked blank", wide)
+	}
+
+	// The box a fitted glyph has to end up in: the slot without the reach-back a
+	// ligature is drawn with. Reaching into it would paint over the cells before this
+	// one, which a fallback has no business doing.
+	fit := image.Rect(a.PadLeft, 0, a.SlotW, a.SlotH)
+	if !box.In(fit) {
+		t.Errorf("glyph %d: ink %v is outside %v", wide, box, fit)
+	}
+	if box.Dx() >= wideW {
+		t.Errorf("glyph %d: ink is %d px wide, was %d px unfitted — it was not shrunk",
+			wide, box.Dx(), wideW)
+	}
+	t.Logf("glyph %d: %d px wide unfitted, %v baked, cell %d px", wide, wideW, box, fm.CellWidth)
 }

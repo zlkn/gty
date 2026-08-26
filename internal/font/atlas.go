@@ -6,6 +6,7 @@ import (
 	"image/color"
 	"image/draw"
 	"image/png"
+	"math"
 	"os"
 
 	"golang.org/x/image/font/sfnt"
@@ -24,7 +25,8 @@ const (
 )
 
 // Key identifies one baked glyph. The style is part of the key because glyph
-// numbering is per face: GID 1167 is a different glyph in Regular and in Bold.
+// numbering is per face: GID 1167 is a different glyph in Regular and in Bold, and
+// a different one again in every face of the fallback chain.
 type Key struct {
 	Style Style
 	GID   GID
@@ -79,7 +81,7 @@ type Atlas struct {
 	//
 	// No lock guards any of this. Everything that touches the atlas — the parser,
 	// the layout pass, the upload — runs on the main thread.
-	rast    [NumStyles]*rasterizer
+	rast    []*rasterizer
 	free    int   // next unbaked slot
 	dirty   []int // slots written since the last TakeDirty
 	maxRows int   // as many as the device's texture limit allows
@@ -108,13 +110,19 @@ func (a *Atlas) Ensure(k Key) (u, v float32) {
 
 // bake rasterises one glyph into the next free slot, adding rows if there are none.
 func (a *Atlas) bake(k Key) (int, error) {
+	if int(k.Style) >= len(a.rast) {
+		return 0, fmt.Errorf("no %s face loaded", k.Style)
+	}
+	r := a.rast[k.Style]
 	if a.free >= a.Cols*a.Rows && !a.grow() {
 		return 0, fmt.Errorf("atlas full at %d slots", a.free)
 	}
 	i := a.free
 	slot := a.slotRect(i)
-	dot := fixed.P(slot.Min.X+a.PadLeft, slot.Min.Y+a.PadTop+a.Ascent)
-	if err := a.rast[k.Style].draw(a.Img, k.GID, dot); err != nil {
+	// The face's own baseline, not the grid's: a fallback is a different design
+	// fitted to the cell, and it sits on a line of its own.
+	dot := fixed.P(slot.Min.X+a.PadLeft, slot.Min.Y+a.PadTop+r.ascent)
+	if err := r.draw(a.Img, k.GID, dot, a.fitBox(slot, r.fit), slot); err != nil {
 		return 0, err
 	}
 
@@ -145,6 +153,35 @@ func (a *Atlas) grow() bool {
 		Rect:   image.Rect(0, 0, a.Img.Rect.Dx(), rows*a.SlotH),
 	}
 	return true
+}
+
+// addFace appends a rasterizer for a face that joined the fallback chain mid-session,
+// keeping a.rast indexed exactly like FontManager.faces.
+//
+// The sheet is not re-measured, and does not have to be: a fitted face draws inside
+// its cell by construction, which is what fitBox is for. Nothing already baked moves.
+func (a *Atlas) addFace(fc *face) {
+	a.rast = append(a.rast, &rasterizer{
+		f: fc.font, ppem: fc.ppem, ascent: fc.ascent, fit: fc.fitted,
+	})
+}
+
+// fitBox is the box a glyph from a fitted face has to stay inside: its own cell, plus
+// the bleed the family itself is allowed on the other three sides.
+//
+// Not the whole slot. PadLeft is about three cells wide — the reach-back a ligature is
+// drawn with — and a fallback glyph spilling that far would be painted over the
+// characters before it. The small allowance is there because the shrink is decided from
+// the outline's control points, which sit a fraction outside the ink.
+//
+// The zero rectangle means "do not shrink": that is the primary, whose overhang the
+// atlas was measured for.
+func (a *Atlas) fitBox(slot image.Rectangle, fit bool) image.Rectangle {
+	if !fit {
+		return image.Rectangle{}
+	}
+	// Which is the slot with the reach-back trimmed off its left edge.
+	return image.Rect(slot.Min.X+a.PadLeft, slot.Min.Y, slot.Max.X, slot.Max.Y)
 }
 
 // TakeDirty is the slots written since the last call, for the renderer to copy up.
@@ -217,15 +254,22 @@ func (a *Atlas) DumpPNG(path string) error {
 // this path produce pixel-for-pixel the same ASCII glyphs as the rune-keyed one
 // it replaces.
 type rasterizer struct {
-	f    *sfnt.Font
-	ppem fixed.Int26_6
-	buf  sfnt.Buffer
-	rast vector.Rasterizer
-	mask image.Alpha
+	f      *sfnt.Font
+	ppem   fixed.Int26_6
+	ascent int  // the baseline this face draws on, from the top of the cell
+	fit    bool // shrink a glyph that does not fit its cell; see Atlas.fitBox
+	buf    sfnt.Buffer
+	rast   vector.Rasterizer
+	mask   image.Alpha
 }
 
 // draw composites gid onto dst with its pen (the baseline origin) at dot.
-func (r *rasterizer) draw(dst *image.Alpha, gid GID, dot fixed.Point26_6) error {
+//
+// fit, when not the zero rectangle, is a box the ink is scaled down to fit and then
+// centred horizontally in — how a face that was not designed for this grid is kept
+// inside its cell. clip is the hard boundary: whatever would land outside the glyph's
+// own slot is dropped rather than scribbled over a neighbour's.
+func (r *rasterizer) draw(dst *image.Alpha, gid GID, dot fixed.Point26_6, fit, clip image.Rectangle) error {
 	segs, err := r.f.LoadGlyph(&r.buf, gid, r.ppem, nil)
 	if err != nil {
 		return err
@@ -234,6 +278,21 @@ func (r *rasterizer) draw(dst *image.Alpha, gid GID, dot fixed.Point26_6) error 
 	dr := image.Rect(db.Min.X.Floor(), db.Min.Y.Floor(), db.Max.X.Ceil(), db.Max.Y.Ceil())
 	if dr.Empty() {
 		return nil // blank by design: the space, and the ligature spacer glyphs
+	}
+
+	// Shrink to the box, then move what is left into the middle of it: an outline three
+	// cells wide comes back one cell wide and centred, instead of one cell of it and
+	// two cells of its neighbours. Whole pixels, so the ink and the rectangle tracking
+	// it cannot drift apart.
+	scale, shift := float32(1), fixed.Point26_6{}
+	if !fit.Empty() && !dr.In(fit) {
+		scale = fitScale(dr, fit)
+		dr = scaleRect(dr, dot, scale)
+		dx, dy := center(dr, fit)
+		shift, dr = fixed.P(dx, dy), dr.Add(image.Pt(dx, dy))
+	}
+	if dr = dr.Intersect(clip); dr.Empty() {
+		return nil
 	}
 
 	// Bias the outline into rasterizer space, whose origin is dr.Min.
@@ -249,26 +308,72 @@ func (r *rasterizer) draw(dst *image.Alpha, gid GID, dot fixed.Point26_6) error 
 
 	r.rast.Reset(w, h)
 	r.rast.DrawOp = draw.Src
+	// One control point in rasterizer space. Segment coordinates are relative to the
+	// pen, so scaling is a plain multiply; the bias carries the pen and the slot.
+	at := func(p fixed.Point26_6) (x, y float32) {
+		return (float32(p.X)*scale + float32(biasX+shift.X)) / 64,
+			(float32(p.Y)*scale + float32(biasY+shift.Y)) / 64
+	}
 	for _, seg := range segs {
 		switch seg.Op {
 		case sfnt.SegmentOpMoveTo:
-			r.rast.MoveTo(float32(seg.Args[0].X+biasX)/64, float32(seg.Args[0].Y+biasY)/64)
+			x, y := at(seg.Args[0])
+			r.rast.MoveTo(x, y)
 		case sfnt.SegmentOpLineTo:
-			r.rast.LineTo(float32(seg.Args[0].X+biasX)/64, float32(seg.Args[0].Y+biasY)/64)
+			x, y := at(seg.Args[0])
+			r.rast.LineTo(x, y)
 		case sfnt.SegmentOpQuadTo:
-			r.rast.QuadTo(
-				float32(seg.Args[0].X+biasX)/64, float32(seg.Args[0].Y+biasY)/64,
-				float32(seg.Args[1].X+biasX)/64, float32(seg.Args[1].Y+biasY)/64)
+			x1, y1 := at(seg.Args[0])
+			x2, y2 := at(seg.Args[1])
+			r.rast.QuadTo(x1, y1, x2, y2)
 		case sfnt.SegmentOpCubeTo:
-			r.rast.CubeTo(
-				float32(seg.Args[0].X+biasX)/64, float32(seg.Args[0].Y+biasY)/64,
-				float32(seg.Args[1].X+biasX)/64, float32(seg.Args[1].Y+biasY)/64,
-				float32(seg.Args[2].X+biasX)/64, float32(seg.Args[2].Y+biasY)/64)
+			x1, y1 := at(seg.Args[0])
+			x2, y2 := at(seg.Args[1])
+			x3, y3 := at(seg.Args[2])
+			r.rast.CubeTo(x1, y1, x2, y2, x3, y3)
 		}
 	}
 	r.rast.Draw(&r.mask, r.mask.Bounds(), image.Opaque, image.Point{})
 	draw.DrawMask(dst, dr, image.Opaque, image.Point{}, &r.mask, r.mask.Rect.Min, draw.Over)
 	return nil
+}
+
+// fitScale is how much a glyph has to shrink for its ink to fit inside box, never above
+// 1: a glyph smaller than its cell is left at its own size.
+//
+// Sizes, not distances from the pen. Scaling about the pen alone cannot fix a glyph
+// whose ink reaches to the left of it — and most do, by a fraction — because the pen
+// sits on the cell's own left edge: there is no room on that side to scale into, and
+// the arithmetic collapses to zero.
+func fitScale(ink, box image.Rectangle) float32 {
+	// A pixel of slack on each axis. Scaling to the box exactly still lands a pixel
+	// outside it: the edges come out fractional, and coverage spreads into whichever
+	// pixel an edge touches.
+	w, h := max(box.Dx()-1, 1), max(box.Dy()-1, 1)
+	s := float32(1)
+	if ink.Dx() > w {
+		s = min(s, float32(w)/float32(ink.Dx()))
+	}
+	if ink.Dy() > h {
+		s = min(s, float32(h)/float32(ink.Dy()))
+	}
+	return s
+}
+
+// center is the whole-pixel shift that puts ink in the middle of box.
+func center(ink, box image.Rectangle) (dx, dy int) {
+	return (box.Min.X + box.Max.X - ink.Min.X - ink.Max.X) / 2,
+		(box.Min.Y + box.Max.Y - ink.Min.Y - ink.Max.Y) / 2
+}
+
+// scaleRect is ink scaled about dot, rounded outward so the box still contains the ink.
+func scaleRect(ink image.Rectangle, dot fixed.Point26_6, scale float32) image.Rectangle {
+	x, y := float64(dot.X)/64, float64(dot.Y)/64
+	at := func(v int, origin float64) float64 { return origin + (float64(v)-origin)*float64(scale) }
+	return image.Rect(
+		int(math.Floor(at(ink.Min.X, x))), int(math.Floor(at(ink.Min.Y, y))),
+		int(math.Ceil(at(ink.Max.X, x))), int(math.Ceil(at(ink.Max.Y, y))),
+	)
 }
 
 // glyphPadding measures how far ink escapes the cell box.
@@ -282,18 +387,26 @@ func (r *rasterizer) draw(dst *image.Alpha, gid GID, dot fixed.Point26_6) error 
 // literal 1 would have survived a font swap and then quietly clipped every ligature:
 // with GSUB glyphs in the set PadLeft jumps to about three cells, because a four-cell
 // ligature is drawn entirely in its last one.
-func glyphPadding(rs [NumStyles]*rasterizer, cellW, cellH, ascent int) (l, t, right, b int) {
+func glyphPadding(rs []*rasterizer, cellW, cellH int) (l, t, right, b int) {
 	for _, r := range rs {
+		if r.fit {
+			// A fitted face is shrunk into its cell at bake time, so it needs no
+			// room of its own — and must not ask for any: its face bounding box is
+			// wide, and a face that joins the chain mid-session cannot resize a
+			// sheet that already has glyphs in it.
+			continue
+		}
 		bounds, err := r.f.Bounds(&r.buf, r.ppem, Hinting)
 		if err != nil {
 			continue
 		}
 		// Bounds are relative to the pen: x=0 at the cell's left edge, y=0 at the
-		// baseline, which sits ascent px below the top of the cell.
+		// baseline, which sits r.ascent px below the top of the cell — each face
+		// measured against its own, because the fallback's is not the grid's.
 		l = max(l, -bounds.Min.X.Floor())
 		right = max(right, bounds.Max.X.Ceil()-cellW)
-		t = max(t, -(ascent + bounds.Min.Y.Floor()))
-		b = max(b, ascent+bounds.Max.Y.Ceil()-cellH)
+		t = max(t, -(r.ascent + bounds.Min.Y.Floor()))
+		b = max(b, r.ascent+bounds.Max.Y.Ceil()-cellH)
 	}
 	return l, t, right, b // seeded at 0, so every side is already clamped
 }
@@ -312,20 +425,24 @@ const spareRows = 8
 // maxTexture is the device's largest 2D texture dimension, and it is a hard ceiling:
 // the sheet is laid out as wide as it allows and grows downward within it.
 func BakeAtlas(fm *FontManager, maxTexture int) (*Atlas, error) {
-	var rs [NumStyles]*rasterizer
+	rs := make([]*rasterizer, fm.NumFaces())
 	var eager []Key
-	for i := range NumStyles {
+	for i, fc := range fm.faces {
 		style := Style(i)
-		f := fm.Font(style)
-		rs[style] = &rasterizer{f: f, ppem: fm.PPEM}
-		for _, gid := range fm.Shaper(style).GlyphSet(f.NumGlyphs()) {
+		rs[style] = &rasterizer{f: fc.font, ppem: fc.ppem, ascent: fc.ascent, fit: fc.fitted}
+		if style >= Fallback {
+			// Nothing in a first frame comes from the chain, and its faces run to
+			// tens of thousands of glyphs. Ensure bakes them on the frame that asks.
+			continue
+		}
+		for _, gid := range fc.shaper.GlyphSet(fc.font.NumGlyphs()) {
 			eager = append(eager, Key{Style: style, GID: gid})
 		}
 	}
 	if len(eager) == 0 {
 		return nil, fmt.Errorf("bake atlas: empty glyph set")
 	}
-	padL, padT, padR, padB := glyphPadding(rs, fm.CellWidth, fm.CellHeight, fm.Ascent)
+	padL, padT, padR, padB := glyphPadding(rs, fm.CellWidth, fm.CellHeight)
 
 	a := &Atlas{
 		SlotW: fm.CellWidth + padL + padR,

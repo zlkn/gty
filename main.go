@@ -8,11 +8,18 @@
 // Ctrl+Shift+Q quits, Ctrl+Tab cycles the focus. The wheel scrolls the pane under the
 // mouse; Shift+PageUp/PageDown and Ctrl+Shift+Up/Down scroll the focused one. Every
 // other key goes to the shell.
+//
+// Colours come from $XDG_CONFIG_HOME/gty/config.toml, or from the -config file; see
+// config.example.toml.
 package main
 
 import (
+	"cmp"
+	"errors"
+	"flag"
 	"fmt"
 	"image"
+	"io/fs"
 	"os"
 	"runtime"
 	"strings"
@@ -24,11 +31,22 @@ import (
 	"github.com/oliverbestmann/webgpu/wgpuglfw"
 )
 
+// Set from the config file, which is read before the window is built. Defaults here.
+var (
+	// fontFamily empty means the embedded JetBrains Mono; anything else is looked up
+	// among the installed fonts.
+	fontFamily = ""
+	fontSize   = 24.0
+
+	// fontGamma bends the antialiasing coverage curve; zero derives it from the theme.
+	// See coverageExponent.
+	fontGamma = 0.0
+)
+
 const (
 	initialWidth  = 900
 	initialHeight = 600
 	title         = "gty"
-	fontSize      = 16
 	padding       = 8
 	dividerWidth  = 1
 	wheelLines    = 3
@@ -51,24 +69,39 @@ const (
 	cursorBlinkPeriod = 1200 * time.Millisecond
 )
 
+// The theme. These are the defaults; the config file replaces them before the first
+// frame, which is why nothing here may be baked into another initialiser.
 var (
 	// backgroundRGBA is the source of truth: the clear value and the inverted glyph
 	// under a block cursor have to be the same colour, and two literals would drift.
-	backgroundRGBA = [4]float32{0.09, 0.10, 0.12, 1}
-	background     = wgpu.Color{
-		R: float64(backgroundRGBA[0]),
-		G: float64(backgroundRGBA[1]),
-		B: float64(backgroundRGBA[2]),
-		A: float64(backgroundRGBA[3]),
-	}
+	backgroundRGBA = [4]float32{0.949, 0.949, 0.949, 1} // #f2f2f2
+	foreground     = [4]float32{0.259, 0.259, 0.259, 1} // #424242
 
-	foreground = [4]float32{0.85, 0.87, 0.91, 1}
-	divider    = [4]float32{0.20, 0.22, 0.26, 1}
+	// selectionColor also paints the dividers between panes.
+	selectionColor = [4]float32{0.851, 0.851, 0.851, 1} // #d9d9d9
 
+	// Derived; see refreshTheme.
+	cursorColor [4]float32
+
+	// coverageExp is what the text shader raises glyph coverage to. Derived from the
+	// theme, because which way the curve has to bend depends on which of the ink and
+	// the paper is darker.
+	coverageExp float32
+)
+
+// refreshTheme recomputes everything that follows from the theme's own colours. The
+// config file assigns to the sources long after their initialisers have run, so the
+// derivation cannot live in one.
+// The clear value is not among the derived colours, even though it follows from
+// backgroundRGBA: it depends on the surface format too, and this runs from init and from
+// the config file, both long before there is an adapter to ask. See clearValue.
+func refreshTheme() {
 	// A block draws its glyph in the background colour, so the cursor has to be
 	// something that reads against it.
 	cursorColor = foreground
-)
+	coverageExp = coverageExponent(foreground, backgroundRGBA, fontGamma)
+	palette = buildPalette()
+}
 
 func dim(c [4]float32) [4]float32 {
 	return [4]float32{c[0] * dimFactor, c[1] * dimFactor, c[2] * dimFactor, c[3]}
@@ -77,6 +110,7 @@ func dim(c [4]float32) [4]float32 {
 func init() {
 	// glfw must talk to the window manager from the thread it was initialised on.
 	runtime.LockOSThread()
+	refreshTheme()
 }
 
 type app struct {
@@ -88,6 +122,10 @@ type app struct {
 	config   *wgpu.SurfaceConfiguration
 	text     *text
 	rects    *rects
+
+	// srgb is whether the surface encodes what is written to it. The shaders decode
+	// their own colours; the clear value is the one that has to be decoded here.
+	srgb bool
 
 	// panes and dividers are what the last relayout derived from root.
 	root     *node
@@ -138,6 +176,17 @@ func (a *app) ensureShell(p *pane) {
 }
 
 func main() {
+	configFile := flag.String("config", "", "TOML config file (default "+configPath()+")")
+	flag.Parse()
+
+	if err := loadConfig(cmp.Or(*configFile, configPath())); err != nil {
+		// An absent config is only an error when it was asked for by name.
+		if *configFile != "" || !errors.Is(err, fs.ErrNotExist) {
+			fmt.Fprintln(os.Stderr, "gty:", err)
+			os.Exit(1)
+		}
+	}
+
 	a, err := newApp()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "gty:", err)
@@ -187,9 +236,21 @@ func newApp() (*app, error) {
 	// from the first frame.
 	w, h := window.GetFramebufferSize()
 	caps := a.surface.GetCapabilities(adapter)
+	if len(caps.Formats) == 0 || len(caps.AlphaModes) == 0 {
+		a.release()
+		return nil, errors.New("the surface offers no texture format to draw in")
+	}
+	format := pickFormat(caps.Formats)
+	a.srgb = isSrgbFormat(format)
+	if !a.srgb {
+		// Worth saying out loud rather than looking washed out or flat: this is the
+		// branch where blending happens in gamma space, and the colours reach the
+		// screen without passing through a transfer function at all.
+		fmt.Fprintf(os.Stderr, "gty: surface format %v is not sRGB; blending in gamma space\n", format)
+	}
 	a.config = &wgpu.SurfaceConfiguration{
 		Usage:       wgpu.TextureUsageRenderAttachment,
-		Format:      caps.Formats[0],
+		Format:      format,
 		Width:       uint32(w),
 		Height:      uint32(h),
 		PresentMode: wgpu.PresentModeFifo, // vsync
@@ -534,7 +595,7 @@ func (a *app) relayout() {
 		a.paint = paintRects(a.paint, p, cellW, cellH)
 	}
 	a.rects.AddQuads(a.paint)
-	a.rects.Add(a.dividers, divider)
+	a.rects.Add(a.dividers, selectionColor)
 	fills, rims := cursorRects(a.panes, a.focused, cellW, cellH)
 	a.rects.Add(fills, cursorColor)
 	a.rects.Add(rims, dim(cursorColor))
@@ -591,7 +652,7 @@ func (a *app) render() error {
 			View:       view,
 			LoadOp:     wgpu.LoadOpClear,
 			StoreOp:    wgpu.StoreOpStore,
-			ClearValue: background,
+			ClearValue: clearValue(backgroundRGBA, a.srgb),
 		}},
 	})
 	a.rects.Draw(pass, a.config.Width, a.config.Height)

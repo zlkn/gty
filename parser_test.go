@@ -278,8 +278,9 @@ func TestPaneAnswersDeviceAttributes(t *testing.T) {
 func TestPaneAnswersColorQueries(t *testing.T) {
 	p := gridPane(1, image.Rect(0, 0, 800, 600), 80, 24)
 
-	// backgroundRGBA is 0.09, 0.10, 0.12.
-	if got, want := string(p.feed([]byte("\x1b]11;?\x1b\\"))), "\x1b]11;rgb:170a/1999/1eb8\x1b\\"; got != want {
+	// Derived from the theme rather than spelled out, so recolouring gty does not
+	// come back as a failure here.
+	if got, want := string(p.feed([]byte("\x1b]11;?\x1b\\"))), oscColor(11, backgroundRGBA); got != want {
 		t.Errorf("background query answered %q, want %q", got, want)
 	}
 	if got := string(p.feed([]byte("\x1b]10;?\x1b\\"))); !strings.HasPrefix(got, "\x1b]10;rgb:") {

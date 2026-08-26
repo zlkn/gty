@@ -34,7 +34,8 @@ type rects struct {
 	vertexBuf *wgpu.Buffer
 
 	instances []rectInstance
-	bufCap    int // vertexBuf capacity, in instances
+	bufCap    int  // vertexBuf capacity, in instances
+	srgb      bool // whether the target encodes what the shader writes; see srgb.go
 }
 
 func newRects(device *wgpu.Device, queue *wgpu.Queue, format wgpu.TextureFormat) (r *rects, err error) {
@@ -44,7 +45,7 @@ func newRects(device *wgpu.Device, queue *wgpu.Queue, format wgpu.TextureFormat)
 			r = nil
 		}
 	}()
-	r = &rects{device: device, queue: queue}
+	r = &rects{device: device, queue: queue, srgb: isSrgbFormat(format)}
 
 	// Its own viewport uniform rather than the text renderer's: 16 bytes buys two
 	// pipelines that do not care which of them draws first.
@@ -207,7 +208,7 @@ func (r *rects) Draw(pass *wgpu.RenderPassEncoder, viewportW, viewportH uint32) 
 		return
 	}
 	r.queue.WriteBuffer(r.uniform, 0, wgpu.ToBytes([]float32{
-		float32(viewportW), float32(viewportH), 0, 0,
+		float32(viewportW), float32(viewportH), srgbFlag(r.srgb), 0,
 	}))
 	pass.SetScissorRect(0, 0, viewportW, viewportH)
 	pass.SetPipeline(r.pipeline)
