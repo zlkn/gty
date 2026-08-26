@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"golang.org/x/image/font/sfnt"
@@ -52,6 +53,10 @@ var testFace = [NumStyles]string{
 const (
 	testSymbolFace  = "../../assets/SymbolsNerdFontMono-Regular.ttf"
 	testGeneralFace = "../../assets/DejaVuSansMono.ttf"
+
+	// What source() calls them, which is what FaceName reports.
+	symbolFaceName  = "SymbolsNerdFontMono-Regular.ttf"
+	generalFaceName = "DejaVuSansMono.ttf"
 )
 
 func readFace(t *testing.T, path string) []byte {
@@ -91,7 +96,8 @@ func testOptions(t *testing.T) Options {
 	return Options{
 		Styles: styles, Family: "Monospace",
 		Size: testSize, DPI: testDPI, MaxTexture: testMaxTexture,
-		Warn: func(msg string) { t.Log("warn:", msg) },
+		IconFill: DefaultIconFill,
+		Warn:     func(msg string) { t.Log("warn:", msg) },
 	}
 }
 
@@ -279,10 +285,13 @@ func TestResolveWalksTheFallbackChain(t *testing.T) {
 		t.Errorf("the finder was asked %d times for a rune the family has", finder.calls)
 	}
 
+	// Faces are named after where they came from, and an icon face after the face it is
+	// a twin of, so the name is what says which link answered — the index no longer
+	// does, because an icon is drawn from a twin appended after the whole chain.
 	icon := fm.Resolve(Italic, 0, testIcon)
-	if icon.Style != Fallback || icon.GID == 0 {
-		t.Errorf("%U resolved to %s glyph %d, want the loaded chain",
-			rune(testIcon), icon.Style, icon.GID)
+	if icon.GID == 0 || !strings.HasPrefix(fm.FaceName(icon.Style), symbolFaceName) {
+		t.Errorf("%U resolved to %s (%q) glyph %d, want the symbol face in the loaded chain",
+			rune(testIcon), icon.Style, fm.FaceName(icon.Style), icon.GID)
 	}
 	if finder.calls != 0 {
 		t.Errorf("the finder was asked for %U, which the chain already had", rune(testIcon))
@@ -290,12 +299,13 @@ func TestResolveWalksTheFallbackChain(t *testing.T) {
 
 	// Past the end of the chain: the finder is asked, and its face joins the chain.
 	dingbat := fm.Resolve(Regular, 0, testDingbat)
-	if dingbat.Style != Fallback+1 || dingbat.GID == 0 {
-		t.Errorf("%U resolved to %s glyph %d, want a face appended past the symbol one",
-			rune(testDingbat), dingbat.Style, dingbat.GID)
+	if dingbat.GID == 0 || fm.FaceName(dingbat.Style) != generalFaceName {
+		t.Errorf("%U resolved to %s (%q) glyph %d, want the face the finder offered",
+			rune(testDingbat), dingbat.Style, fm.FaceName(dingbat.Style), dingbat.GID)
 	}
-	if fm.NumFaces() != NumStyles+2 {
-		t.Errorf("%d faces after the finder answered, want %d", fm.NumFaces(), NumStyles+2)
+	// The family, the symbol face, its icon twin, and the finder's face.
+	if fm.NumFaces() != NumStyles+3 {
+		t.Errorf("%d faces after the finder answered, want %d", fm.NumFaces(), NumStyles+3)
 	}
 
 	// One face for all four styles: an icon in a bold run costs the same slot as in a
@@ -423,5 +433,100 @@ func TestEmbeddedFamilyIsMonospaced(t *testing.T) {
 	if n := proportionalRunes(fm.Font(Regular), fm.PPEM, fm.CellWidth); n != 0 {
 		t.Errorf("%d of the printable ASCII glyphs do not advance by one %d px cell",
 			n, fm.CellWidth)
+	}
+}
+
+// TestIsIconRune: the boundaries are the whole of it. Get one wrong and either a letter
+// is drawn as an icon or a prompt's icons stay half-height.
+func TestIsIconRune(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		r    rune
+		want bool
+	}{
+		{"below the private-use area", 0xDFFF, false},
+		{"first of the BMP area", 0xE000, true},
+		{"last before powerline", 0xE09F, true},
+		{"first powerline", powerlineLo, false},
+		{"last powerline", powerlineHi, false},
+		{"first after powerline", 0xE0D8, true},
+		{"last of the BMP area", 0xF8FF, true},
+		{"between the two areas", 0xF900, false},
+		{"first of plane 15", 0xF0000, true},
+		{"last of plane 15", 0xFFFFD, true},
+		{"past plane 15", 0x100000, false},
+		{"the heavy check mark", testDingbat, false},
+		{"a heart", 0x2665, false},
+		{"a letter", 'a', false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isIconRune(tc.r); got != tc.want {
+				t.Errorf("isIconRune(%U) = %v, want %v", tc.r, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestIconTwinIsSharedAndStyleless: an icon has no italic, so all four styles draw it from
+// one twin — and the twin is built once, however many icons ask for it.
+func TestIconTwinIsSharedAndStyleless(t *testing.T) {
+	fm := newManager(t, testOptions(t))
+
+	gid, ok := fm.GlyphIndex(Regular, testIcon)
+	if !ok {
+		t.Fatalf("the family has no %U", rune(testIcon))
+	}
+	regular := fm.Resolve(Regular, gid, testIcon)
+	if regular.Style < Fallback {
+		t.Fatalf("%U came from %s, want a twin appended past the styles", rune(testIcon), regular.Style)
+	}
+	for _, style := range []Style{Bold, Italic, BoldItalic} {
+		if got := fm.Resolve(style, gid, testIcon); got != regular {
+			t.Errorf("%s draws %U from %v, want the same %v as Regular", style, rune(testIcon), got, regular)
+		}
+	}
+
+	// A second icon from the same face reuses the twin rather than adding another.
+	before := fm.NumFaces()
+	other, ok := fm.GlyphIndex(Regular, 0xF07B)
+	if !ok {
+		t.Fatal("the family has no U+F07B")
+	}
+	if got := fm.Resolve(Regular, other, 0xF07B); got.Style != regular.Style {
+		t.Errorf("a second icon came from %s, want the same twin %s", got.Style, regular.Style)
+	}
+	if fm.NumFaces() != before {
+		t.Errorf("%d faces after a second icon, want %d", fm.NumFaces(), before)
+	}
+	if name := fm.FaceName(regular.Style); !strings.HasSuffix(name, "icons") {
+		t.Errorf("the twin is called %q, want it named after the face it doubles", name)
+	}
+}
+
+// TestNonIconRunesAreNotScaled: the patched family carries plenty of standard Unicode
+// symbols too, and those are read as text — a heart in a sentence, a check mark after a
+// command. Scaling them would make prose ragged, so only the private-use areas are icons.
+func TestNonIconRunesAreNotScaled(t *testing.T) {
+	o := testOptions(t)
+	o.Finder = &fakeFinder{faces: []Source{source(t, testGeneralFace)}}
+	fm := newManager(t, o)
+
+	// In the family: the key comes back exactly as the shaper made it.
+	for _, r := range []rune{'a', '=', 0x2665, 0x2713, '─', '█'} {
+		gid, ok := fm.GlyphIndex(Regular, r)
+		if !ok {
+			t.Errorf("%q (%U): the family has no glyph", r, r)
+			continue
+		}
+		if got, want := fm.Resolve(Regular, gid, r), (Key{Regular, gid}); got != want {
+			t.Errorf("%q (%U) resolved to %v, want %v untouched", r, r, got, want)
+		}
+	}
+
+	// From a fallback face: still the face itself, not a twin of it.
+	dingbat := fm.Resolve(Regular, 0, testDingbat)
+	if got := fm.FaceName(dingbat.Style); got != generalFaceName {
+		t.Errorf("%U came from %q, want the fallback face %q itself",
+			rune(testDingbat), got, generalFaceName)
 	}
 }

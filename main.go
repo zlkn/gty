@@ -29,6 +29,8 @@ import (
 	"github.com/go-gl/glfw/v3.4/glfw"
 	"github.com/oliverbestmann/webgpu/wgpu"
 	"github.com/oliverbestmann/webgpu/wgpuglfw"
+
+	"gty/internal/font"
 )
 
 // Set from the config file, which is read before the window is built. Defaults here.
@@ -41,6 +43,11 @@ var (
 	// fontGamma bends the antialiasing coverage curve; zero derives it from the theme.
 	// See coverageExponent.
 	fontGamma = 0.0
+
+	// fontIconScale is the share of the cell's height an icon is scaled to fill; zero
+	// leaves icons at the size the face draws them. Read when the renderer is built,
+	// not in refreshTheme: it decides the atlas geometry, which is laid out once.
+	fontIconScale = font.DefaultIconFill
 )
 
 const (

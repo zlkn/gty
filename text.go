@@ -212,7 +212,8 @@ func newFontManager(sizePt float64, maxTexture int) (*font.FontManager, error) {
 		Styles: embedded, Family: embeddedFamily,
 		Finder: lib,
 		Size:   sizePt, DPI: 72, MaxTexture: maxTexture,
-		Warn: warn,
+		IconFill: fontIconScale,
+		Warn:     warn,
 	}
 
 	if fontFamily != "" && !strings.EqualFold(fontFamily, embeddedFamily) {

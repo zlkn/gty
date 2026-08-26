@@ -30,9 +30,10 @@ type config struct {
 // embedded JetBrains Mono, which is also what a family that cannot be found falls back
 // to — see newText.
 type fontConfig struct {
-	Family *string  `toml:"family"`
-	Size   *float64 `toml:"size"`
-	Gamma  *float64 `toml:"gamma"`
+	Family    *string  `toml:"family"`
+	Size      *float64 `toml:"size"`
+	Gamma     *float64 `toml:"gamma"`
+	IconScale *float64 `toml:"icon_scale"`
 }
 
 type colorConfig struct {
@@ -132,6 +133,15 @@ func (c config) apply() error {
 			return fmt.Errorf("font.gamma is %v, want a value between 0.25 and 4", *g)
 		}
 		fontGamma = *g
+	}
+	if sc := c.Font.IconScale; sc != nil {
+		// Zero is legal and means "leave icons at the size the face draws them"; past 1
+		// the ink would leave the cell vertically, where nothing is reserved for it.
+		if *sc < 0 || *sc > 1 {
+			return fmt.Errorf("font.icon_scale is %v, want a share of the cell's height "+
+				"between 0 and 1, or 0 to leave icons at the size the face draws them", *sc)
+		}
+		fontIconScale = *sc
 	}
 
 	cl := c.Colors

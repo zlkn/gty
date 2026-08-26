@@ -15,10 +15,10 @@ import (
 func keepTheme(t *testing.T) {
 	t.Helper()
 	bg, fg, sel, named := backgroundRGBA, foreground, selectionColor, base16
-	family, size, gamma := fontFamily, fontSize, fontGamma
+	family, size, gamma, icons := fontFamily, fontSize, fontGamma, fontIconScale
 	t.Cleanup(func() {
 		backgroundRGBA, foreground, selectionColor, base16 = bg, fg, sel, named
-		fontFamily, fontSize, fontGamma = family, size, gamma
+		fontFamily, fontSize, fontGamma, fontIconScale = family, size, gamma, icons
 		refreshTheme()
 	})
 }
@@ -131,7 +131,8 @@ func TestColorParsing(t *testing.T) {
 func TestLoadConfigFont(t *testing.T) {
 	keepTheme(t)
 
-	if err := loadConfig(writeConfig(t, "[font]\nfamily = \"Iosevka\"\nsize = 13.5\ngamma = 2\n")); err != nil {
+	if err := loadConfig(writeConfig(t,
+		"[font]\nfamily = \"Iosevka\"\nsize = 13.5\ngamma = 2\nicon_scale = 0.6\n")); err != nil {
 		t.Fatal(err)
 	}
 	if fontFamily != "Iosevka" {
@@ -147,6 +148,9 @@ func TestLoadConfigFont(t *testing.T) {
 	if coverageExp != 0.5 {
 		t.Errorf("coverage exponent is %v, want 0.5", coverageExp)
 	}
+	if fontIconScale != 0.6 {
+		t.Errorf("icon_scale is %v, want 0.6", fontIconScale)
+	}
 }
 
 func TestLoadConfigErrors(t *testing.T) {
@@ -161,6 +165,10 @@ func TestLoadConfigErrors(t *testing.T) {
 		{"gamma at zero", "[font]\ngamma = 0\n", "font.gamma"},
 		{"gamma out of range", "[font]\ngamma = 12\n", "font.gamma"},
 		{"size out of range", "[font]\nsize = 0\n", "font.size"},
+		// Zero is deliberately absent: unlike gamma, it is a legal icon_scale and means
+		// "leave icons at the size the face draws them".
+		{"icon scale negative", "[font]\nicon_scale = -0.5\n", "font.icon_scale"},
+		{"icon scale past one", "[font]\nicon_scale = 1.5\n", "font.icon_scale"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

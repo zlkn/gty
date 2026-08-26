@@ -5,6 +5,7 @@ import (
 	_ "image/png"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"golang.org/x/image/font/sfnt"
@@ -301,6 +302,12 @@ func TestAtlasLazyInkFitsEverySlot(t *testing.T) {
 	a := fm.Atlas
 	slotBox := image.Rect(0, 0, a.SlotW, a.SlotH)
 
+	// Ask for an icon first, so the walk covers its twin too: a twin is the one face
+	// deliberately allowed to draw outside its cell, which makes it the one most likely
+	// to leave its slot.
+	if gid, ok := fm.GlyphIndex(Regular, testIcon); ok {
+		fm.Resolve(Regular, gid, testIcon)
+	}
 	faces := []Style{Regular}
 	for face := Fallback; int(face) < fm.NumFaces(); face++ {
 		faces = append(faces, face)
@@ -411,21 +418,28 @@ func mustGlyph(t *testing.T, fm *FontManager, r rune) GID {
 	return gid
 }
 
-// TestFallbackMatchesTheFamily is what the fallback's fitted ppem and baseline are for.
-// The patched family carries the same icons, so the same rune can be drawn both ways
-// and the two compared: a pixel apart is the target, since the faces are different
+// TestFallbackMatchesTheFamily is what the fitted ppem and baseline are for. The patched
+// family carries the same glyphs as the symbol face, so the same rune can be drawn both
+// ways and the two compared: a pixel apart is the target, since the faces are different
 // designs, and anything more means the scale or the baseline is wrong.
 //
-// Powerline separators are left out deliberately. The patcher stretches those to the
-// full cell so a prompt's arrows tile with no seam; the standalone symbol face draws
-// them at their natural size, so from the fallback they come out cell-width but around
-// half the cell tall.
+// Both sides go through Resolve, so both get the same policy — an icon from either face is
+// drawn from that face's twin, at the size that fills the cell's height. Comparing a
+// twinned icon against an untwinned one would only be measuring the twin.
+//
+// Powerline separators are left out deliberately. The patcher stretches those to the full
+// cell so a prompt's arrows tile with no seam; the standalone symbol face draws them at
+// their natural size, so from the fallback they come out around half the cell tall.
 func TestFallbackMatchesTheFamily(t *testing.T) {
 	o := testOptions(t)
 	o.Fallback = []Source{source(t, testSymbolFace)}
 	fm := newManager(t, o)
 	a := fm.Atlas
-	const tolerance = 1
+
+	// Two pixels, not one: each face is fitted by its own median icon now, so a single
+	// icon can land a pixel either side of where the other face puts it — that is the
+	// difference between the two designs' spreads, not a mistake in the fit.
+	const tolerance = 2
 
 	// One rune per icon set the fallback is likely to be asked for: Font Awesome,
 	// Octicons, Devicons, Codicons, Material Design, and a plain Unicode symbol.
@@ -435,15 +449,16 @@ func TestFallbackMatchesTheFamily(t *testing.T) {
 			t.Errorf("%U: the family has no glyph, so there is nothing to compare against", r)
 			continue
 		}
+		famKey := fm.Resolve(Regular, fam, r)
 		fb := fm.Resolve(Regular, 0, r)
-		if fb.Style != Fallback {
-			t.Errorf("%U: the fallback has no glyph for it", r)
+		if fb == famKey || fb.GID == 0 {
+			t.Errorf("%U: the fallback has no glyph of its own for it", r)
 			continue
 		}
-		a.Ensure(Key{Regular, fam})
+		a.Ensure(famKey)
 		a.Ensure(fb)
 
-		want, inked := slotInk(t, a, Key{Regular, fam})
+		want, inked := slotInk(t, a, famKey)
 		if !inked {
 			t.Errorf("%U: the family baked it blank; pick another probe", r)
 			continue
@@ -559,4 +574,161 @@ func TestFitShrinksAWideGlyph(t *testing.T) {
 			wide, box.Dx(), wideW)
 	}
 	t.Logf("glyph %d: %d px wide unfitted, %v baked, cell %d px", wide, wideW, box, fm.CellWidth)
+}
+
+// TestIconFillsTheCellHeight is the point of the icon twin. A Nerd Font's Mono variant
+// fits every icon to the cell's *width*, and a cell is about twice as tall as it is wide,
+// so a prompt's icons come out half the height of the line. They are drawn from a twin of
+// the face at the size that fills the height instead, which makes them wider than a cell —
+// deliberately, and only into the room the atlas reserved for it.
+func TestIconFillsTheCellHeight(t *testing.T) {
+	fm := newManager(t, testOptions(t))
+	a := fm.Atlas
+
+	// The box a twin is allowed: its cell, the reach it was given on the left, and the
+	// family's own bleed on the right. In slot coordinates.
+	fit := image.Rect(0, 0, a.SlotW, a.SlotH)
+	cell := image.Rect(a.PadLeft, a.PadTop, a.PadLeft+fm.CellWidth, a.PadTop+fm.CellHeight)
+
+	var heights []int
+	for _, r := range iconSample {
+		gid, ok := fm.GlyphIndex(Regular, r)
+		if !ok {
+			continue
+		}
+		plain, icon := Key{Regular, gid}, fm.Resolve(Regular, gid, r)
+		if icon.Style < Fallback {
+			t.Fatalf("%U was not routed to a twin; it came from %s", r, icon.Style)
+		}
+		a.Ensure(plain)
+		a.Ensure(icon)
+
+		was, inked := slotInk(t, a, plain)
+		if !inked {
+			continue
+		}
+		got, inked := slotInk(t, a, icon)
+		if !inked {
+			t.Errorf("%U baked blank from the twin", r)
+			continue
+		}
+		if got.Dy() <= was.Dy() {
+			t.Errorf("%U is %d px tall from the twin against %d untwinned; it did not grow",
+				r, got.Dy(), was.Dy())
+		}
+		if !got.In(fit) {
+			t.Errorf("%U: ink %v leaves its %v slot", r, got, fit)
+		}
+		// Centred on the cell, within a pixel of rounding: an icon wider than its cell
+		// has to overhang both sides, not sit off to one.
+		if off := (got.Min.X + got.Max.X) - (cell.Min.X + cell.Max.X); off < -2 || off > 2 {
+			t.Errorf("%U: ink %v is off the cell's centre %v by %d px", r, got, cell, off)
+		}
+		heights = append(heights, got.Dy())
+	}
+	if len(heights) == 0 {
+		t.Fatal("no icons in the sample were drawn")
+	}
+
+	// The face is fitted by its median icon, so that is what lands on the target; the
+	// individual icons spread around it, which is the design's own spread kept intact.
+	slices.Sort(heights)
+	median, want := heights[len(heights)/2], DefaultIconFill*float64(fm.CellHeight)
+	if float64(median) < want-2 || float64(median) > want+2 {
+		t.Errorf("the median icon is %d px tall in a %d px cell, want about %.1f",
+			median, fm.CellHeight, want)
+	}
+	t.Logf("%d icons, heights %v, cell %dx%d", len(heights), heights, fm.CellWidth, fm.CellHeight)
+}
+
+// TestPowerlineIsNotScaled: the patcher already stretches the separators to the full cell
+// so a prompt's arrows tile with no seam. Scaling them would open the seam back up and
+// push each arrow over its neighbour, so they are excluded from the icon range.
+func TestPowerlineIsNotScaled(t *testing.T) {
+	fm := newManager(t, testOptions(t))
+	a := fm.Atlas
+
+	for _, r := range []rune{0xE0A0, 0xE0B0, 0xE0B2} {
+		gid, ok := fm.GlyphIndex(Regular, r)
+		if !ok {
+			t.Errorf("%U: the family has no glyph", r)
+			continue
+		}
+		key := fm.Resolve(Regular, gid, r)
+		if key != (Key{Regular, gid}) {
+			t.Errorf("%U resolved to %v, want the family's own glyph %v untouched",
+				r, key, Key{Regular, gid})
+			continue
+		}
+		a.Ensure(key)
+		box, inked := slotInk(t, a, key)
+		if !inked {
+			t.Errorf("%U baked blank", r)
+			continue
+		}
+		// Already the full height of the cell, which is why it needs no help.
+		if box.Dy() < fm.CellHeight {
+			t.Errorf("%U is %d px tall in a %d px cell; the patched face used to fill it",
+				r, box.Dy(), fm.CellHeight)
+		}
+	}
+}
+
+// TestPowerlineWouldMoveIfScaled proves the exclusion earns its place: bake the same
+// separator through the icon twin on purpose and it does move, so leaving powerline out of
+// the icon range is doing work rather than describing a rule with no effect.
+func TestPowerlineWouldMoveIfScaled(t *testing.T) {
+	fm := newManager(t, testOptions(t))
+	a := fm.Atlas
+
+	gid, ok := fm.GlyphIndex(Regular, 0xE0B0)
+	if !ok {
+		t.Skip("the family has no powerline separator")
+	}
+	twin, ok := fm.iconTwin(Regular)
+	if !ok {
+		t.Fatal("the family got no icon twin to compare against")
+	}
+	plain, forced := Key{Regular, gid}, Key{twin, gid}
+	a.Ensure(plain)
+	a.Ensure(forced)
+
+	was, _ := slotInk(t, a, plain)
+	got, _ := slotInk(t, a, forced)
+	if got == was {
+		t.Errorf("the separator is %v either way; the exclusion is not doing anything", was)
+	}
+	t.Logf("U+E0B0 as drawn %v, scaled as an icon it would be %v (cell %dx%d)",
+		was, got, fm.CellWidth, fm.CellHeight)
+}
+
+// TestIconScaleOff: the knob's other end has to give back exactly the old rendering — the
+// slot the atlas reserves and the pixels an icon lands on.
+func TestIconScaleOff(t *testing.T) {
+	on := newManager(t, testOptions(t))
+
+	o := testOptions(t)
+	o.IconFill = 0
+	off := newManager(t, o)
+
+	if off.NumFaces() != NumStyles {
+		t.Errorf("%d faces with icon scaling off, want %d — a twin was built anyway",
+			off.NumFaces(), NumStyles)
+	}
+	gid, ok := off.GlyphIndex(Regular, testIcon)
+	if !ok {
+		t.Fatalf("the family has no %U", rune(testIcon))
+	}
+	if got, want := off.Resolve(Regular, gid, testIcon), (Key{Regular, gid}); got != want {
+		t.Errorf("%U resolved to %v, want the family's own glyph %v", rune(testIcon), got, want)
+	}
+
+	// And the sheet is the one the family alone asks for: no room reserved for an
+	// overhang that cannot happen.
+	if off.Atlas.PadRight > on.Atlas.PadRight {
+		t.Errorf("PadRight is %d with scaling off against %d with it on", off.Atlas.PadRight, on.Atlas.PadRight)
+	}
+	t.Logf("off: slot %dx%d padding R%d | on: slot %dx%d padding R%d",
+		off.Atlas.SlotW, off.Atlas.SlotH, off.Atlas.PadRight,
+		on.Atlas.SlotW, on.Atlas.SlotH, on.Atlas.PadRight)
 }

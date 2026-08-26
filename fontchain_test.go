@@ -72,9 +72,12 @@ func TestFontChainFromConfig(t *testing.T) {
 		t.Errorf("the head of the chain is %q, want %q", got, embeddedFamily)
 	}
 
-	// An icon this family has never heard of, drawn from the embedded one.
-	icon := fm.Resolve(font.Regular, 0, '')
-	if icon.Style != font.Fallback {
+	// An icon this family has never heard of, drawn from the embedded one — from that
+	// face's icon twin, in fact, which is why this looks at the name rather than the
+	// index: an icon is drawn at the size that fills the cell's height, from a twin of
+	// whichever face turned out to have it.
+	icon := fm.Resolve(font.Regular, 0, '\uf015') // Font Awesome's house
+	if !strings.HasPrefix(fm.FaceName(icon.Style), embeddedFamily) {
 		t.Errorf("U+F015 came from %s (%s), want the embedded family",
 			icon.Style, fm.FaceName(icon.Style))
 	}

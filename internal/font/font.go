@@ -91,6 +91,11 @@ type face struct {
 	// one turn up mid-session: the atlas slot was measured without it.
 	fitted bool
 
+	// reach is how far outside its cell this face may draw to the left. Only an icon
+	// face has any: it is wider than a cell on purpose, and its overhang belongs on
+	// both sides so the icon sits centred. See Atlas.fitBox.
+	reach int
+
 	name string // for messages; the four styles are named by their Style
 }
 
@@ -145,6 +150,11 @@ type Options struct {
 	// Size in points and DPI; PPEM is derived from both.
 	Size, DPI float64
 
+	// IconFill is the share of the cell's height an icon's ink is scaled to fill; see
+	// iconFit. Zero leaves icons at the size the face drew them, which is half a line
+	// on a Nerd Font's Mono variant — DefaultIconFill is what the app passes.
+	IconFill float64
+
 	MaxTexture int // the device's largest 2D texture; it bounds the atlas
 
 	// Warn reports what was worked around rather than failed on — a fallback that
@@ -182,6 +192,12 @@ type FontManager struct {
 	finder Finder
 	warn   func(string)
 
+	// iconFill is Options.IconFill, and iconTwin is the face each face's icons are drawn
+	// from — the same file at the bigger size. Built on first use, because most sessions
+	// draw icons from one face and none from the rest.
+	iconFill  float64
+	iconTwins map[Style]Style
+
 	// resolved is every rune the chain has been asked about, hits and misses
 	// alike. A miss has to be remembered too: without it, a screen full of a rune
 	// nothing has would search the system's fonts again on every frame.
@@ -200,10 +216,12 @@ func NewManager(o Options) (*FontManager, error) {
 	ppem := fixed.Int26_6(0.5 + (o.Size * o.DPI * 64 / 72))
 	fm := &FontManager{
 		Family: o.Family, Size: o.Size, PPEM: ppem,
-		faces:    make([]*face, NumStyles),
-		finder:   o.Finder,
-		warn:     o.Warn,
-		resolved: make(map[rune]Key),
+		faces:     make([]*face, NumStyles),
+		finder:    o.Finder,
+		warn:      o.Warn,
+		resolved:  make(map[rune]Key),
+		iconFill:  o.IconFill,
+		iconTwins: make(map[Style]Style),
 	}
 
 	for i := range NumStyles {
@@ -295,6 +313,123 @@ func proportionalRunes(f *sfnt.Font, ppem fixed.Int26_6, cellW int) int {
 		}
 	}
 	return n
+}
+
+// Nerd Font icons live in the two private-use areas, and they are the reason a terminal
+// needs a size policy of its own: the patcher's Mono variant fits every icon to the cell
+// *width*, and a cell is about twice as tall as it is wide, so an icon drawn at the size
+// the file says comes out half the height of the line. Other terminals fit them to the
+// cell height and let the width overhang; that is what iconFit reproduces.
+const (
+	iconPUALo, iconPUAHi     = 0xE000, 0xF8FF   // the BMP area: powerline, devicons, seti, ...
+	iconPlaneLo, iconPlaneHi = 0xF0000, 0xFFFFD // plane 15: Material Design, since Nerd Fonts v3
+
+	// Powerline is excluded. The patcher already stretches those to the full cell so a
+	// prompt's arrows tile with no seam, and scaling them would open it back up.
+	powerlineLo, powerlineHi = 0xE0A0, 0xE0D7
+
+	// DefaultIconFill is how much of the cell's height an icon is scaled to fill.
+	// Measured against a terminal that does this by default: 0.8 of the line, against
+	// the 0.45 the patched font draws at.
+	DefaultIconFill = 0.8
+)
+
+// isIconRune reports whether r is an icon rather than a character — something drawn to be
+// looked at rather than read, and which therefore wants the whole height of the line.
+//
+// Note what is *not* here: the standard-Unicode symbols the patcher also carries, ✔ and ♥
+// and the box drawing, which appear in prose and have to stay text-sized.
+func isIconRune(r rune) bool {
+	if r >= powerlineLo && r <= powerlineHi {
+		return false
+	}
+	return r >= iconPUALo && r <= iconPUAHi || r >= iconPlaneLo && r <= iconPlaneHi
+}
+
+// iconSample is what a face is measured on, one rune per icon set: Font Awesome, Octicons,
+// Devicons, Codicons, Seti, Material Design. A fixed list, so the size a face is fitted to
+// is the same on every run — and a spread, because an icon set's glyphs are not all one
+// height and the median of a single set would not stand in for the rest.
+var iconSample = [...]rune{
+	0xF015, 0xF07B, 0xF00C, 0xF0F3, 0xF09B, 0xF113, 0xF121, // Font Awesome, Octicons
+	0xE62B, 0xE712, 0xE725, 0xE73C, 0xE20F, 0xF1D0, // Seti, Devicons, Codicons
+	0xF0320, 0xF10FE, 0xF0868, // Material Design, plane 15
+}
+
+// iconFit is where an icon face draws: the size it is rasterised at, the baseline that
+// centres it in the cell, and how far it reaches out of the cell on each side, which the
+// atlas has to reserve room for before the face exists.
+//
+// The size comes from the ink, not from the metrics: the face is the same file at a bigger
+// ppem, so its ascent and descent are bigger than the cell by construction and say nothing
+// about where the icons in it sit.
+//
+// fill is the share of the cell's height the ink is scaled to; zero or less turns the whole
+// thing off. ok is also false for a face with no icons to measure, which is most of them —
+// a text face gets no twin and its runes keep drawing at their own size.
+func iconFit(base *face, cellW, cellH int, fill float64) (ppem fixed.Int26_6, ascent, overhang int, ok bool) {
+	if fill <= 0 {
+		return 0, 0, 0, false
+	}
+	above, below, width, ok := medianIconBox(base)
+	if !ok {
+		return 0, 0, 0, false
+	}
+	// The box is in font units; these are the same numbers in the pixels the face draws
+	// text at. Measured in units and converted here rather than measured in pixels,
+	// because a bounding box rounded outward at both ends overstates a ten-pixel icon by
+	// a fifth, and the scale derived from it would fall as far short.
+	perUnit := float64(base.ppem) / 64 / float64(base.font.UnitsPerEm())
+	a, b, w := perUnit*float64(above), perUnit*float64(below), perUnit*float64(width)
+
+	scale := fill * float64(cellH) / (a + b)
+	if scale <= 1 {
+		return 0, 0, 0, false // nothing to gain, and no room to reserve
+	}
+
+	// Centre the scaled median ink in the cell: the baseline is wherever it has to be for
+	// that, which is not where the face's own metrics would put it.
+	a, b = scale*a, scale*b
+	ascent = int(0.5*(float64(cellH)-(a+b)) + a + 0.5)
+	overhang = int(0.5*(scale*w-float64(cellW)) + 0.9999)
+	return fixed.Int26_6(float64(base.ppem) * scale), ascent, max(overhang, 0), true
+}
+
+// medianIconBox is the middle icon's box in font units: how far it reaches above and below
+// the baseline, and how wide it is. Medians rather than extremes, so one outsized glyph in
+// a set does not decide the size of every other.
+//
+// Units, not pixels: at ppem = upem a "pixel" is a font unit, so nothing is rounded away
+// and the caller can scale the numbers without inheriting the rounding.
+func medianIconBox(base *face) (above, below, width int, ok bool) {
+	var buf sfnt.Buffer
+	em := fixed.I(int(base.font.UnitsPerEm()))
+	var as, bs, ws []int
+	for _, r := range iconSample {
+		gid, err := base.font.GlyphIndex(&buf, r)
+		if err != nil || gid == 0 {
+			continue
+		}
+		bounds, _, err := base.font.GlyphBounds(&buf, gid, em, xfont.HintingNone)
+		if err != nil || bounds.Empty() {
+			continue
+		}
+		// Bounds are relative to the pen: y grows downward, so Min.Y is the top.
+		as = append(as, (-bounds.Min.Y).Round())
+		bs = append(bs, bounds.Max.Y.Round())
+		ws = append(ws, (bounds.Max.X - bounds.Min.X).Round())
+	}
+	if len(as) == 0 {
+		return 0, 0, 0, false
+	}
+	slices.Sort(as)
+	slices.Sort(bs)
+	slices.Sort(ws)
+	mid := len(as) / 2
+	if as[mid]+bs[mid] <= 0 {
+		return 0, 0, 0, false
+	}
+	return as[mid], bs[mid], ws[mid], true
 }
 
 // fitFace loads a face that was not designed for this grid and scales it into it.
@@ -443,6 +578,56 @@ func (fm *FontManager) GlyphIndex(s Style, r rune) (GID, bool) {
 // A rune nothing covers comes back as GID 0, which is the box — a hole that reads as
 // missing rather than as a space.
 func (fm *FontManager) Resolve(s Style, gid GID, r rune) Key {
+	k := fm.resolveFace(s, gid, r)
+	if k.GID == 0 || !isIconRune(r) {
+		return k
+	}
+	// An icon is drawn from a twin of whichever face turned out to have it: the same
+	// file at the size that fills the cell's height. The glyph id carries over
+	// unchanged, because it is the same file — that is what makes this cost nothing.
+	if twin, ok := fm.iconTwin(k.Style); ok {
+		return Key{Style: twin, GID: k.GID}
+	}
+	return k
+}
+
+// iconTwin is the face style's icons are drawn from, built on first use. ok is false when
+// the face has no icons to measure, or when the twin would be no bigger than the face.
+//
+// One twin serves all four styles, like a fallback does: an icon has no italic, and four
+// copies of the same glyph would only cost atlas slots.
+func (fm *FontManager) iconTwin(s Style) (Style, bool) {
+	if s < NumStyles {
+		s = Regular
+	}
+	if twin, in := fm.iconTwins[s]; in {
+		return twin, twin != s
+	}
+
+	base := fm.face(s)
+	if base == nil || len(fm.faces) >= maxFaces {
+		return s, false
+	}
+	ppem, ascent, overhang, ok := iconFit(base, fm.CellWidth, fm.CellHeight, fm.iconFill)
+	if !ok {
+		fm.iconTwins[s] = s // remembered as "no twin", so the measuring happens once
+		return s, false
+	}
+
+	twin := Style(len(fm.faces))
+	fc := &face{
+		font: base.font, ppem: ppem, ascent: ascent,
+		fitted: true, reach: overhang, name: base.name + " icons",
+	}
+	fm.faces = append(fm.faces, fc)
+	fm.Atlas.addFace(fc)
+	fm.iconTwins[s] = twin
+	fm.warnf("icons from %s drawn at %v, %v for text", base.name, ppem, base.ppem)
+	return twin, true
+}
+
+// resolveFace is Resolve without the icon policy: which face and glyph id carry r.
+func (fm *FontManager) resolveFace(s Style, gid GID, r rune) Key {
 	if gid != 0 {
 		return Key{Style: s, GID: gid}
 	}

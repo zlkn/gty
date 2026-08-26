@@ -122,7 +122,7 @@ func (a *Atlas) bake(k Key) (int, error) {
 	// The face's own baseline, not the grid's: a fallback is a different design
 	// fitted to the cell, and it sits on a line of its own.
 	dot := fixed.P(slot.Min.X+a.PadLeft, slot.Min.Y+a.PadTop+r.ascent)
-	if err := r.draw(a.Img, k.GID, dot, a.fitBox(slot, r.fit), slot); err != nil {
+	if err := r.draw(a.Img, k.GID, dot, a.fitBox(slot, r), slot); err != nil {
 		return 0, err
 	}
 
@@ -162,26 +162,28 @@ func (a *Atlas) grow() bool {
 // its cell by construction, which is what fitBox is for. Nothing already baked moves.
 func (a *Atlas) addFace(fc *face) {
 	a.rast = append(a.rast, &rasterizer{
-		f: fc.font, ppem: fc.ppem, ascent: fc.ascent, fit: fc.fitted,
+		f: fc.font, ppem: fc.ppem, ascent: fc.ascent, fit: fc.fitted, reach: fc.reach,
 	})
 }
 
-// fitBox is the box a glyph from a fitted face has to stay inside: its own cell, plus
-// the bleed the family itself is allowed on the other three sides.
+// fitBox is the box a glyph from a fitted face has to stay inside: its own cell, plus the
+// bleed the family itself is allowed to the right and below, plus whatever reach the face
+// was given to the left.
 //
 // Not the whole slot. PadLeft is about three cells wide — the reach-back a ligature is
-// drawn with — and a fallback glyph spilling that far would be painted over the
-// characters before it. The small allowance is there because the shrink is decided from
-// the outline's control points, which sit a fraction outside the ink.
+// drawn with — and a fallback character spilling that far would be painted over the words
+// before it, so a plain fallback gets no reach at all. An icon face gets the same reach on
+// the left as the room reserved for it on the right, which is what centres an icon wider
+// than its cell on the cell rather than off to one side.
 //
-// The zero rectangle means "do not shrink": that is the primary, whose overhang the
-// atlas was measured for.
-func (a *Atlas) fitBox(slot image.Rectangle, fit bool) image.Rectangle {
-	if !fit {
+// The zero rectangle means "do not shrink": that is the primary, whose overhang the atlas
+// was measured for.
+func (a *Atlas) fitBox(slot image.Rectangle, r *rasterizer) image.Rectangle {
+	if !r.fit {
 		return image.Rectangle{}
 	}
-	// Which is the slot with the reach-back trimmed off its left edge.
-	return image.Rect(slot.Min.X+a.PadLeft, slot.Min.Y, slot.Max.X, slot.Max.Y)
+	left := max(slot.Min.X, slot.Min.X+a.PadLeft-r.reach)
+	return image.Rect(left, slot.Min.Y, slot.Max.X, slot.Max.Y)
 }
 
 // TakeDirty is the slots written since the last call, for the renderer to copy up.
@@ -258,6 +260,7 @@ type rasterizer struct {
 	ppem   fixed.Int26_6
 	ascent int  // the baseline this face draws on, from the top of the cell
 	fit    bool // shrink a glyph that does not fit its cell; see Atlas.fitBox
+	reach  int  // px this face may draw to the left of its cell; see Atlas.fitBox
 	buf    sfnt.Buffer
 	rast   vector.Rasterizer
 	mask   image.Alpha
@@ -429,7 +432,9 @@ func BakeAtlas(fm *FontManager, maxTexture int) (*Atlas, error) {
 	var eager []Key
 	for i, fc := range fm.faces {
 		style := Style(i)
-		rs[style] = &rasterizer{f: fc.font, ppem: fc.ppem, ascent: fc.ascent, fit: fc.fitted}
+		rs[style] = &rasterizer{
+			f: fc.font, ppem: fc.ppem, ascent: fc.ascent, fit: fc.fitted, reach: fc.reach,
+		}
 		if style >= Fallback {
 			// Nothing in a first frame comes from the chain, and its faces run to
 			// tens of thousands of glyphs. Ensure bakes them on the frame that asks.
@@ -443,6 +448,19 @@ func BakeAtlas(fm *FontManager, maxTexture int) (*Atlas, error) {
 		return nil, fmt.Errorf("bake atlas: empty glyph set")
 	}
 	padL, padT, padR, padB := glyphPadding(rs, fm.CellWidth, fm.CellHeight)
+
+	// Icons are drawn from a twin of the face at the size that fills the cell's height,
+	// so they reach out of the cell sideways — see iconFit. That room has to be reserved
+	// here, before the twin exists: the sheet is laid out once and a face that turns up
+	// later cannot resize it. Only to the right, because PadLeft is already three cells
+	// of ligature reach-back and covers the other half with room to spare.
+	//
+	// A twin of some fallback face may want more than this. It does not get it: fitBox
+	// shrinks whatever would leave the slot, which costs that one face a little size
+	// rather than costing every glyph in the sheet a bigger slot.
+	if _, _, overhang, ok := iconFit(fm.faces[Regular], fm.CellWidth, fm.CellHeight, fm.iconFill); ok {
+		padR = max(padR, overhang)
+	}
 
 	a := &Atlas{
 		SlotW: fm.CellWidth + padL + padR,
