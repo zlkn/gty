@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"image"
 	"io/fs"
+	"math"
 	"os"
 	"runtime"
 	"strings"
@@ -54,9 +55,13 @@ const (
 	initialWidth  = 900
 	initialHeight = 600
 	title         = "gty"
-	padding       = 8
-	dividerWidth  = 1
-	wheelLines    = 3
+
+	// Lengths in logical pixels, here and in the cursor block below: px turns them
+	// into framebuffer pixels at the display's own scale. See uiScale.
+	padding      = 8
+	dividerWidth = 1
+
+	wheelLines = 3
 
 	// dimFactor darkens unfocused panes. They have no border of their own, so
 	// brightness is the whole focus cue.
@@ -75,6 +80,33 @@ const (
 	// nothing; see run.
 	cursorBlinkPeriod = 1200 * time.Millisecond
 )
+
+// uiScale is how many framebuffer pixels the display puts in a logical one: two on a
+// HiDPI laptop panel, one on the monitor plugged into it. Everything the window draws
+// is sized in logical units and scaled by this, so the terminal comes out the same
+// physical size on either screen. Set from the window before the first frame, and
+// again whenever it moves to a display that scales differently; see app.setScale.
+var uiScale = 1.0
+
+// px is a logical length in framebuffer pixels. A line never rounds away to nothing —
+// a divider or an underline that vanishes at some scale reads as a bug in the renderer.
+func px(n int) int {
+	if n <= 0 {
+		return 0
+	}
+	return max(1, int(float64(n)*uiScale+0.5))
+}
+
+// contentScale is the window's scale as one number. glfw reports the axes separately;
+// no display scales them apart, and the larger is the safe one to take.
+func contentScale(w *glfw.Window) float64 {
+	x, y := w.GetContentScale()
+	s := math.Max(float64(x), float64(y))
+	if math.IsNaN(s) || math.IsInf(s, 0) || s <= 0 {
+		return 1 // a platform with nothing to say reports zero
+	}
+	return s
+}
 
 // The theme. These are the defaults; the config file replaces them before the first
 // frame, which is why nothing here may be baked into another initialiser.
@@ -222,6 +254,10 @@ func newApp() (*app, error) {
 		return nil, fmt.Errorf("create window: %w", err)
 	}
 
+	// Before anything is sized: the atlas is rasterised at the scale the display
+	// draws at, and the grid is sized from the atlas.
+	uiScale = contentScale(window)
+
 	a := &app{window: window}
 	a.instance = wgpu.CreateInstance(nil)
 	a.surface = a.instance.CreateSurface(wgpuglfw.GetSurfaceDescriptor(window))
@@ -268,7 +304,7 @@ func newApp() (*app, error) {
 	}
 	a.surface.Configure(a.device, a.config)
 
-	if a.text, err = newText(a.device, a.queue, a.config.Format, fontSize); err != nil {
+	if a.text, err = newText(a.device, a.queue, a.config.Format, fontSize, uiScale); err != nil {
 		a.release()
 		return nil, fmt.Errorf("text renderer: %w", err)
 	}
@@ -282,6 +318,9 @@ func newApp() (*app, error) {
 
 	window.SetFramebufferSizeCallback(func(_ *glfw.Window, width, height int) {
 		a.resize(width, height)
+	})
+	window.SetContentScaleCallback(func(w *glfw.Window, _, _ float32) {
+		a.setScale(contentScale(w))
 	})
 	window.SetKeyCallback(func(_ *glfw.Window, key glfw.Key, _ int, act glfw.Action, mods glfw.ModifierKey) {
 		if act != glfw.Press && act != glfw.Repeat {
@@ -603,6 +642,27 @@ func (a *app) relayout() {
 	a.rects.Add(fills, cursorColor)
 	a.rects.Add(rims, dim(cursorColor))
 	a.rects.Upload()
+}
+
+// setScale rebakes the atlas for a display that scales differently — the window was
+// dragged onto the other monitor, or the compositor changed its mind about this one.
+// Glyphs are rasterised at the exact size they are drawn at and the sampler does not
+// filter, so a new scale needs a new sheet rather than a bigger quad.
+//
+// A relayout is enough to pick up the new cell size and the scaled padding; the
+// framebuffer callback that usually follows this one only changes the surface.
+func (a *app) setScale(scale float64) {
+	if scale == uiScale {
+		return
+	}
+	if err := a.text.SetScale(fontSize, scale); err != nil {
+		// Keep the sheet that is on the GPU. Half applied, the grid would be laid out
+		// for a cell the glyphs are not drawn at.
+		fmt.Fprintln(os.Stderr, "gty: rescale font:", err)
+		return
+	}
+	uiScale = scale
+	a.Damage()
 }
 
 func (a *app) resize(width, height int) {

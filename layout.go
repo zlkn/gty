@@ -353,8 +353,9 @@ func (p *pane) cursorCell(cellW, cellH int) (image.Rectangle, bool) {
 		return image.Rectangle{}, false
 	}
 	from, _ := p.visible()
-	x := p.rect.Min.X + padding + col*cellW
-	y := p.rect.Min.Y + padding + (i-from)*cellH
+	pad := px(padding)
+	x := p.rect.Min.X + pad + col*cellW
+	y := p.rect.Min.Y + pad + (i-from)*cellH
 	return image.Rect(x, y, x+cellW, y+cellH), true
 }
 
@@ -362,10 +363,10 @@ func (p *pane) cursorCell(cellW, cellH int) (image.Rectangle, bool) {
 func cursorQuads(cell image.Rectangle, s cursorShape) []image.Rectangle {
 	switch s {
 	case cursorBar:
-		w := min(cursorBarWidth, cell.Dx())
+		w := min(px(cursorBarWidth), cell.Dx())
 		return []image.Rectangle{image.Rect(cell.Min.X, cell.Min.Y, cell.Min.X+w, cell.Max.Y)}
 	case cursorUnderline:
-		h := min(cursorUnderlineHeight, cell.Dy())
+		h := min(px(cursorUnderlineHeight), cell.Dy())
 		return []image.Rectangle{image.Rect(cell.Min.X, cell.Max.Y-h, cell.Max.X, cell.Max.Y)}
 	default:
 		return []image.Rectangle{cell}
@@ -376,8 +377,8 @@ func cursorQuads(cell image.Rectangle, s cursorShape) []image.Rectangle {
 // glyph alone, which is what keeps the inverted cell — and so the ligature split —
 // a focused-pane-only problem.
 func cursorOutline(cell image.Rectangle) []image.Rectangle {
-	w := min(cursorOutlineWidth, cell.Dx())
-	h := min(cursorOutlineWidth, cell.Dy())
+	w := min(px(cursorOutlineWidth), cell.Dx())
+	h := min(px(cursorOutlineWidth), cell.Dy())
 	return []image.Rectangle{
 		image.Rect(cell.Min.X, cell.Min.Y, cell.Max.X, cell.Min.Y+h),
 		image.Rect(cell.Min.X, cell.Max.Y-h, cell.Max.X, cell.Max.Y),
@@ -393,7 +394,8 @@ func cursorOutline(cell image.Rectangle) []image.Rectangle {
 // twenty thousand quads, most of them adjacent and identical.
 func paintRects(dst []quad, p *pane, cellW, cellH int) []quad {
 	from, to := p.visible()
-	x0, y0 := p.rect.Min.X+padding, p.rect.Min.Y+padding
+	pad, ul := px(padding), px(underlineHeight)
+	x0, y0 := p.rect.Min.X+pad, p.rect.Min.Y+pad
 
 	for i := from; i < to; i++ {
 		row, _ := p.rowAt(i)
@@ -429,7 +431,7 @@ func paintRects(dst []quad, p *pane, cellW, cellH int) []quad {
 			}
 			fg, _ := cells[c].colors()
 			dst = append(dst, quad{
-				rect:  image.Rect(x0+c*cellW, y+cellH-underlineHeight, x0+(c+1)*cellW, y+cellH),
+				rect:  image.Rect(x0+c*cellW, y+cellH-ul, x0+(c+1)*cellW, y+cellH),
 				color: fg,
 			})
 		}
@@ -555,12 +557,13 @@ func nextPane(panes []*pane, focused *pane) *pane {
 // layoutTree gives every pane its rect and grid, and returns the leaves in layout
 // order — the order Ctrl+Tab walks — with the dividers between them.
 func layoutTree(root *node, r image.Rectangle, cellW, cellH int) (panes []*pane, dividers []image.Rectangle) {
+	pad := px(padding)
 	var walk func(n *node, r image.Rectangle)
 	walk = func(n *node, r image.Rectangle) {
 		if n.pane != nil {
 			p := n.pane
 			p.rect = r
-			p.setGrid(max(0, (r.Dx()-2*padding)/cellW), max(0, (r.Dy()-2*padding)/cellH))
+			p.setGrid(max(0, (r.Dx()-2*pad)/cellW), max(0, (r.Dy()-2*pad)/cellH))
 			panes = append(panes, p)
 			return
 		}
@@ -577,17 +580,18 @@ func layoutTree(root *node, r image.Rectangle, cellW, cellH int) (panes []*pane,
 // between the halves. A rect too small to divide yields empty halves rather than
 // negative ones.
 func splitRect(r image.Rectangle, d dir, ratio float32) (a, div, b image.Rectangle) {
+	dw := px(dividerWidth)
 	if d == vertical {
-		avail := max(0, r.Dx()-dividerWidth)
+		avail := max(0, r.Dx()-dw)
 		cut := r.Min.X + min(max(int(float32(avail)*ratio), 0), avail)
-		end := min(cut+dividerWidth, r.Max.X)
+		end := min(cut+dw, r.Max.X)
 		return image.Rect(r.Min.X, r.Min.Y, cut, r.Max.Y),
 			image.Rect(cut, r.Min.Y, end, r.Max.Y),
 			image.Rect(end, r.Min.Y, r.Max.X, r.Max.Y)
 	}
-	avail := max(0, r.Dy()-dividerWidth)
+	avail := max(0, r.Dy()-dw)
 	cut := r.Min.Y + min(max(int(float32(avail)*ratio), 0), avail)
-	end := min(cut+dividerWidth, r.Max.Y)
+	end := min(cut+dw, r.Max.Y)
 	return image.Rect(r.Min.X, r.Min.Y, r.Max.X, cut),
 		image.Rect(r.Min.X, cut, r.Max.X, end),
 		image.Rect(r.Min.X, end, r.Max.X, r.Max.Y)

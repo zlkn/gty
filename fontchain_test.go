@@ -23,7 +23,7 @@ func withFamily(t *testing.T, family string) {
 func TestFontChainDefault(t *testing.T) {
 	withFamily(t, "")
 
-	fm, err := newFontManager(fontSize, testMaxTexture)
+	fm, err := newFontManager(fontSize, 1, testMaxTexture)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +55,7 @@ func TestFontChainFromConfig(t *testing.T) {
 	}
 	withFamily(t, family)
 
-	fm, err := newFontManager(fontSize, testMaxTexture)
+	fm, err := newFontManager(fontSize, 1, testMaxTexture)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,7 +93,7 @@ func TestFontChainFromConfig(t *testing.T) {
 func TestFontChainFallsBackOnABadFamily(t *testing.T) {
 	withFamily(t, "No Such Font Family At All")
 
-	fm, err := newFontManager(fontSize, testMaxTexture)
+	fm, err := newFontManager(fontSize, 1, testMaxTexture)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +109,7 @@ func TestFontChainFallsBackOnABadFamily(t *testing.T) {
 func TestFontChainIgnoresTheEmbeddedNameCase(t *testing.T) {
 	withFamily(t, strings.ToLower(embeddedFamily))
 
-	fm, err := newFontManager(fontSize, testMaxTexture)
+	fm, err := newFontManager(fontSize, 1, testMaxTexture)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,5 +118,33 @@ func TestFontChainIgnoresTheEmbeddedNameCase(t *testing.T) {
 	if fm.Family != embeddedFamily || fm.NumFaces() != font.NumStyles {
 		t.Errorf("primary %q with %d faces, want the embedded family with %d",
 			fm.Family, fm.NumFaces(), font.NumStyles)
+	}
+}
+
+// TestFontScaleSizesTheCell: the display's scale reaches the cell through the DPI, so
+// the grid on a 2x panel is twice the pixels for the same point size — and the same
+// physical size as on the 1x monitor beside it.
+func TestFontScaleSizesTheCell(t *testing.T) {
+	withFamily(t, "")
+
+	one, err := newFontManager(fontSize, 1, testMaxTexture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer one.Close()
+
+	two, err := newFontManager(fontSize, 2, testMaxTexture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer two.Close()
+
+	// Not exactly twice: the cell is hinted metrics rounded to whole pixels, and
+	// rounding twice is not the same as rounding once.
+	if got, want := two.CellWidth, 2*one.CellWidth; got < want-2 || got > want+2 {
+		t.Errorf("cell is %d px wide at 2x, want about %d", got, want)
+	}
+	if got, want := two.CellHeight, 2*one.CellHeight; got < want-2 || got > want+2 {
+		t.Errorf("cell is %d px tall at 2x, want about %d", got, want)
 	}
 }

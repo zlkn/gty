@@ -49,7 +49,7 @@ func newTestGPU(t testing.TB) (*wgpu.Device, *wgpu.Queue) {
 
 func newTestText(t testing.TB, device *wgpu.Device, queue *wgpu.Queue) *text {
 	t.Helper()
-	txt, err := newText(device, queue, testFormat, fontSize)
+	txt, err := newText(device, queue, testFormat, fontSize, 1)
 	if err != nil {
 		t.Fatal(err)
 	}

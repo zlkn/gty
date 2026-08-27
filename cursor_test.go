@@ -209,3 +209,31 @@ func TestBlinkOn(t *testing.T) {
 		}
 	}
 }
+
+// TestCursorScaled: on a scaled display the cursor steps over the scaled padding and
+// its bar grows with it — a two-pixel bar on a 2x panel is the hairline it is not
+// meant to be.
+func TestCursorScaled(t *testing.T) {
+	withScale(t, 2)
+
+	p := cursorPane(image.Rect(100, 50, 500, 350), 20, 10, 100)
+	p.scr.curRow, p.scr.curCol = 7, 3
+
+	cell, ok := p.cursorCell(testCellW, testCellH)
+	if !ok {
+		t.Fatal("cursorCell reports the cursor hidden")
+	}
+	want := image.Rect(
+		100+2*padding+3*testCellW, 50+2*padding+7*testCellH,
+		100+2*padding+4*testCellW, 50+2*padding+8*testCellH)
+	if cell != want {
+		t.Errorf("cell is %v, want %v", cell, want)
+	}
+
+	if got := cursorQuads(cell, cursorBar)[0]; got.Dx() != 2*cursorBarWidth {
+		t.Errorf("bar is %d px wide, want %d", got.Dx(), 2*cursorBarWidth)
+	}
+	if got := cursorOutline(cell)[0]; got.Dy() != 2*cursorOutlineWidth {
+		t.Errorf("rim is %d px thick, want %d", got.Dy(), 2*cursorOutlineWidth)
+	}
+}

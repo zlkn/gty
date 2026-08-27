@@ -241,3 +241,51 @@ func TestCloseNestedFocusesSibling(t *testing.T) {
 		t.Fatalf("traversal order %v, want [1 2]", got)
 	}
 }
+
+// withScale runs the rest of the test on a display that scales, and puts the global
+// back: uiScale is process-wide, and a leaked 2 would move every later test's geometry.
+func withScale(t *testing.T, scale float64) {
+	t.Helper()
+	prev := uiScale
+	uiScale = scale
+	t.Cleanup(func() { uiScale = prev })
+}
+
+// TestPx: logical lengths scale, and a line never rounds away to nothing.
+func TestPx(t *testing.T) {
+	withScale(t, 1.5)
+	for _, tc := range []struct{ in, want int }{
+		{8, 12}, // padding
+		{1, 2},  // a hairline divider, rounded up
+		{2, 3},  // the cursor bar
+		{0, 0},  // nothing stays nothing
+		{-1, 0}, // and so does nonsense
+	} {
+		if got := px(tc.in); got != tc.want {
+			t.Errorf("px(%d) at 1.5x is %d, want %d", tc.in, got, tc.want)
+		}
+	}
+}
+
+// TestLayoutScaled: at 2x the padding and the divider are twice as wide in framebuffer
+// pixels, so a pane fits fewer cells than the same rect would at 1x.
+func TestLayoutScaled(t *testing.T) {
+	withScale(t, 2)
+
+	root := &node{pane: newPane(1)}
+	root.split(root.pane, vertical, newPane(2))
+
+	full := image.Rect(0, 0, 900, 600)
+	panes, dividers := layoutTree(root, full, testCellW, testCellH)
+
+	if len(dividers) != 1 || dividers[0].Dx() != 2*dividerWidth {
+		t.Errorf("divider %v, want %d px wide", dividers, 2*dividerWidth)
+	}
+	for _, p := range panes {
+		wantCols := (p.rect.Dx() - 4*padding) / testCellW
+		wantRows := (p.rect.Dy() - 4*padding) / testCellH
+		if p.cols != wantCols || p.rows != wantRows {
+			t.Errorf("pane %d is %dx%d cells, want %dx%d", p.id, p.cols, p.rows, wantCols, wantRows)
+		}
+	}
+}

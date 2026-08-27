@@ -62,10 +62,11 @@ type text struct {
 	view      *wgpu.TextureView
 	sampler   *wgpu.Sampler
 
-	instances []instance
-	bufCap    int  // vertexBuf capacity, in instances
-	texRows   int  // the sheet height the texture was created at
-	srgb      bool // whether the target encodes what the shader writes; see srgb.go
+	instances  []instance
+	bufCap     int  // vertexBuf capacity, in instances
+	texRows    int  // the sheet height the texture was created at
+	maxTexture int  // the device's ceiling, kept for the rebake in SetScale
+	srgb       bool // whether the target encodes what the shader writes; see srgb.go
 
 	// Scratch reused across frames: runes for the clipped row, gids for the cursor
 	// row, which is shaped outside the scrollback's cache.
@@ -73,7 +74,7 @@ type text struct {
 	scratch []font.GID
 }
 
-func newText(device *wgpu.Device, queue *wgpu.Queue, format wgpu.TextureFormat, sizePt float64) (t *text, err error) {
+func newText(device *wgpu.Device, queue *wgpu.Queue, format wgpu.TextureFormat, sizePt, scale float64) (t *text, err error) {
 	defer func() {
 		if err != nil {
 			t.release()
@@ -88,11 +89,11 @@ func newText(device *wgpu.Device, queue *wgpu.Queue, format wgpu.TextureFormat, 
 		maxTexture = 8192 // undefined or absurd; the WebGPU baseline
 	}
 
-	fm, err := newFontManager(sizePt, maxTexture)
+	fm, err := newFontManager(sizePt, scale, maxTexture)
 	if err != nil {
 		return nil, err
 	}
-	t = &text{device: device, queue: queue, fm: fm, srgb: isSrgbFormat(format)}
+	t = &text{device: device, queue: queue, fm: fm, maxTexture: maxTexture, srgb: isSrgbFormat(format)}
 	if err = t.makeAtlasTexture(); err != nil {
 		return t, err
 	}
@@ -197,7 +198,7 @@ func newText(device *wgpu.Device, queue *wgpu.Queue, format wgpu.TextureFormat, 
 //
 // A config font that will not load is a warning, not a failure: that covers a typo as well
 // as a family whose four styles disagree about the cell, which is fatal to a grid.
-func newFontManager(sizePt float64, maxTexture int) (*font.FontManager, error) {
+func newFontManager(sizePt, scale float64, maxTexture int) (*font.FontManager, error) {
 	warn := func(s string) { fmt.Fprintln(os.Stderr, "gty: font:", s) }
 	lib := &font.Library{Warn: warn}
 	embedded := [font.NumStyles]font.Source{
@@ -209,7 +210,9 @@ func newFontManager(sizePt float64, maxTexture int) (*font.FontManager, error) {
 	opts := font.Options{
 		Styles: embedded, Family: embeddedFamily,
 		Finder: lib,
-		Size:   sizePt, DPI: 72, MaxTexture: maxTexture,
+		// The display's scale rides in on the DPI: ppem is Size*DPI/72, so the same
+		// point size rasterises at twice the pixels on a 2x panel.
+		Size: sizePt, DPI: 72 * scale, MaxTexture: maxTexture,
 		IconFill: fontIconScale,
 		Warn:     warn,
 	}
@@ -311,6 +314,30 @@ func (t *text) makeBindGroup() error {
 	}
 	t.bindGroup = group
 	return nil
+}
+
+// SetScale rebakes every face at a new display scale and hands the fresh sheet to the
+// GPU. The cell size comes out of it, so the caller only has to relayout.
+//
+// The atlas is replaced whole rather than regrown: every glyph on it was rasterised at
+// the old pixel size, and none of them is reusable at the new one. Cached glyph IDs
+// elsewhere survive — the faces are the same files, and an ID does not depend on ppem.
+func (t *text) SetScale(sizePt, scale float64) error {
+	fm, err := newFontManager(sizePt, scale, t.maxTexture)
+	if err != nil {
+		return err
+	}
+	old := t.fm
+	t.fm = fm
+	if err := t.makeAtlasTexture(); err != nil {
+		// Nothing was replaced yet, so putting the old manager back leaves the
+		// renderer whole and drawing at the scale it already had.
+		t.fm = old
+		fm.Close()
+		return err
+	}
+	old.Close()
+	return t.makeBindGroup()
 }
 
 func (t *text) CellSize() (w, h int) { return t.fm.CellWidth, t.fm.CellHeight }
@@ -425,11 +452,12 @@ func (t *text) Layout(panes []*pane, focused *pane) {
 	slotW, slotH := float32(a.SlotW), float32(a.SlotH)
 	atlasW, atlasH := float32(a.Img.Rect.Dx()), float32(a.Img.Rect.Dy())
 	cellW, cellH := float32(t.fm.CellWidth), float32(t.fm.CellHeight)
+	pad := float32(px(padding))
 
 	for _, p := range panes {
 		p.first, p.count = uint32(len(t.instances)), 0
-		originX := float32(p.rect.Min.X) + padding
-		originY := float32(p.rect.Min.Y) + padding
+		originX := float32(p.rect.Min.X) + pad
+		originY := float32(p.rect.Min.Y) + pad
 
 		shape := func(cells []cell, dst []font.GID) []font.GID { return t.shapeRow(cells, p.cols, dst) }
 		from, to := p.visible()
