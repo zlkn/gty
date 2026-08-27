@@ -1,61 +1,29 @@
-# gty config. Copy to $XDG_CONFIG_HOME/gty/config.toml (~/.config/gty/config.toml) and
-# keep only the keys you want to change: every one of them is optional, and what is not
-# here stays at the built-in default shown below.
-#
-# Colours are "#rrggbb" or "#rrggbbaa". The ANSI palette carries no alpha.
-
-# family is looked up among the installed fonts by the name fc-list shows; bold and italic
-# are found alongside it. Left out, the embedded Nerd Font-patched JetBrains Mono is used.
-#
-# Behind whatever is named here stand the embedded family and then anything installed on the
-# machine, so ✔ and ⬢ and 中 come out as themselves rather than as a box.
 [font]
 family = "JetBrains Mono"
-size = 17
+size = 24
 icon_scale = 0.75
 
 [colors]
 background = "#ebebeb"
+# background = "#f2f2f2"
 foreground = "#424242"
-
-# selectionColor also paints the dividers between panes.
 selection = "#d9d9d9"
 
-# The eight normal colours: black, red, green, yellow, blue, magenta, cyan, white. The ends
-# swap on a light background: black is a light shade, white is the ink.
 ansi = [
   "#d1d1d1", "#b81a6b", "#1e763c", "#8d5b00",
   "#015493", "#75228e", "#007474", "#424242",
 ]
 
-# The same eight, bright — here the same six chromatic colours again: on paper there is
-# nothing to brighten into, and lightening only costs contrast.
 bright = [
   "#57606a", "#b81a6b", "#1e763c", "#8d5b00",
   "#015493", "#75228e", "#007474", "#085157",
 ]
 
-# The window manager's hotkeys, by what they do. Every action keeps the default shown
-# here until this section names it, and an empty string unbinds one — an unbound chord
-# goes to the shell like any other key.
-#
-# A chord is modifiers then one key, joined by "+": ctrl, alt, shift, super, and a key
-# named a-z, 0-9, f1-f25, or one of backspace delete down end enter escape home insert
-# left pagedown pageup right space tab up. Keys are physical, so a binding still works
-# with a non-Latin layout active.
-#
-# Matching is exact — ctrl+shift+pageup is not shift+pageup, and is free to mean
-# something else. A bound chord never reaches the shell, so binding a bare letter costs
-# you that letter.
 [keys]
 quit             = "ctrl+shift+q"
 split_vertical   = "ctrl+shift+d"
 split_horizontal = "ctrl+shift+e"
 close_pane       = "ctrl+shift+w"
-
-# Ctrl+Q is XON and the bare arrows are the shell's, which is why the reserved corner is
-# Ctrl+Shift. Shift+PageUp is the exception: scrolling the pane's own history is what
-# xterm does with it too.
 focus_next       = "ctrl+tab"
 scroll_page_up   = "shift+pageup"
 scroll_page_down = "shift+pagedown"
