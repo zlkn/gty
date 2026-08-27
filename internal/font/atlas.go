@@ -24,9 +24,8 @@ const (
 	StrideAlign = 256
 )
 
-// Key identifies one baked glyph. The style is part of the key because glyph
-// numbering is per face: GID 1167 is a different glyph in Regular and in Bold, and
-// a different one again in every face of the fallback chain.
+// Key identifies one baked glyph. The style is part of it because glyph numbering is per
+// face: GID 1167 is a different glyph in Regular, in Bold, and in every fallback face.
 type Key struct {
 	Style Style
 	GID   GID
@@ -119,8 +118,7 @@ func (a *Atlas) bake(k Key) (int, error) {
 	}
 	i := a.free
 	slot := a.slotRect(i)
-	// The face's own baseline, not the grid's: a fallback is a different design
-	// fitted to the cell, and it sits on a line of its own.
+	// The face's own baseline, not the grid's: a fitted face sits on a line of its own.
 	dot := fixed.P(slot.Min.X+a.PadLeft, slot.Min.Y+a.PadTop+r.ascent)
 	if err := r.draw(a.Img, k.GID, dot, a.fitBox(slot, r), slot); err != nil {
 		return 0, err
@@ -155,29 +153,23 @@ func (a *Atlas) grow() bool {
 	return true
 }
 
-// addFace appends a rasterizer for a face that joined the fallback chain mid-session,
-// keeping a.rast indexed exactly like FontManager.faces.
-//
-// The sheet is not re-measured, and does not have to be: a fitted face draws inside
-// its cell by construction, which is what fitBox is for. Nothing already baked moves.
+// addFace appends a rasterizer for a face that joined mid-session, keeping a.rast indexed
+// like FontManager.faces. The sheet is not re-measured and need not be: fitBox keeps a
+// fitted face inside its cell, so nothing already baked moves.
 func (a *Atlas) addFace(fc *face) {
 	a.rast = append(a.rast, &rasterizer{
 		f: fc.font, ppem: fc.ppem, ascent: fc.ascent, fit: fc.fitted, reach: fc.reach,
 	})
 }
 
-// fitBox is the box a glyph from a fitted face has to stay inside: its own cell, plus the
-// bleed the family itself is allowed to the right and below, plus whatever reach the face
-// was given to the left.
+// fitBox is the box a glyph from a fitted face has to stay inside: its cell, the family's
+// own bleed right and below, and whatever reach the face was given to the left.
 //
-// Not the whole slot. PadLeft is about three cells wide — the reach-back a ligature is
-// drawn with — and a fallback character spilling that far would be painted over the words
-// before it, so a plain fallback gets no reach at all. An icon face gets the same reach on
-// the left as the room reserved for it on the right, which is what centres an icon wider
-// than its cell on the cell rather than off to one side.
+// Not the whole slot: PadLeft is three cells of ligature reach-back, and a fallback
+// character spilling that far would be painted over the words before it. An icon face is
+// given reach matching the room reserved on its right, so a wide icon comes out centred.
 //
-// The zero rectangle means "do not shrink": that is the primary, whose overhang the atlas
-// was measured for.
+// The zero rectangle means "do not shrink" — the primary, whose overhang was measured for.
 func (a *Atlas) fitBox(slot image.Rectangle, r *rasterizer) image.Rectangle {
 	if !r.fit {
 		return image.Rectangle{}
@@ -266,12 +258,9 @@ type rasterizer struct {
 	mask   image.Alpha
 }
 
-// draw composites gid onto dst with its pen (the baseline origin) at dot.
-//
-// fit, when not the zero rectangle, is a box the ink is scaled down to fit and then
-// centred horizontally in — how a face that was not designed for this grid is kept
-// inside its cell. clip is the hard boundary: whatever would land outside the glyph's
-// own slot is dropped rather than scribbled over a neighbour's.
+// draw composites gid onto dst with its pen (the baseline origin) at dot. fit, when not the
+// zero rectangle, is a box the ink is shrunk into and centred in; clip is the hard boundary,
+// so nothing is scribbled over a neighbouring slot.
 func (r *rasterizer) draw(dst *image.Alpha, gid GID, dot fixed.Point26_6, fit, clip image.Rectangle) error {
 	segs, err := r.f.LoadGlyph(&r.buf, gid, r.ppem, nil)
 	if err != nil {
@@ -283,10 +272,8 @@ func (r *rasterizer) draw(dst *image.Alpha, gid GID, dot fixed.Point26_6, fit, c
 		return nil // blank by design: the space, and the ligature spacer glyphs
 	}
 
-	// Shrink to the box, then move what is left into the middle of it: an outline three
-	// cells wide comes back one cell wide and centred, instead of one cell of it and
-	// two cells of its neighbours. Whole pixels, so the ink and the rectangle tracking
-	// it cannot drift apart.
+	// Shrink to the box, then centre in it: an outline three cells wide comes back one cell
+	// wide and centred. Whole pixels, so the ink and the rect tracking it cannot drift.
 	scale, shift := float32(1), fixed.Point26_6{}
 	if !fit.Empty() && !dr.In(fit) {
 		scale = fitScale(dr, fit)
@@ -311,8 +298,8 @@ func (r *rasterizer) draw(dst *image.Alpha, gid GID, dot fixed.Point26_6, fit, c
 
 	r.rast.Reset(w, h)
 	r.rast.DrawOp = draw.Src
-	// One control point in rasterizer space. Segment coordinates are relative to the
-	// pen, so scaling is a plain multiply; the bias carries the pen and the slot.
+	// Segment coordinates are relative to the pen, so scaling is a plain multiply; the bias
+	// carries the pen and the slot.
 	at := func(p fixed.Point26_6) (x, y float32) {
 		return (float32(p.X)*scale + float32(biasX+shift.X)) / 64,
 			(float32(p.Y)*scale + float32(biasY+shift.Y)) / 64
@@ -341,17 +328,14 @@ func (r *rasterizer) draw(dst *image.Alpha, gid GID, dot fixed.Point26_6, fit, c
 	return nil
 }
 
-// fitScale is how much a glyph has to shrink for its ink to fit inside box, never above
-// 1: a glyph smaller than its cell is left at its own size.
+// fitScale is how much a glyph must shrink to fit box, never above 1.
 //
-// Sizes, not distances from the pen. Scaling about the pen alone cannot fix a glyph
-// whose ink reaches to the left of it — and most do, by a fraction — because the pen
-// sits on the cell's own left edge: there is no room on that side to scale into, and
-// the arithmetic collapses to zero.
+// Sizes, not distances from the pen: the pen sits on the cell's left edge, so for the many
+// glyphs whose ink reaches left of it there is no room on that side and the pen-relative
+// arithmetic collapses to zero.
 func fitScale(ink, box image.Rectangle) float32 {
-	// A pixel of slack on each axis. Scaling to the box exactly still lands a pixel
-	// outside it: the edges come out fractional, and coverage spreads into whichever
-	// pixel an edge touches.
+	// A pixel of slack: a fractional edge inks the pixel it touches, so fitting exactly
+	// lands one pixel outside.
 	w, h := max(box.Dx()-1, 1), max(box.Dy()-1, 1)
 	s := float32(1)
 	if ink.Dx() > w {
@@ -393,19 +377,16 @@ func scaleRect(ink image.Rectangle, dot fixed.Point26_6, scale float32) image.Re
 func glyphPadding(rs []*rasterizer, cellW, cellH int) (l, t, right, b int) {
 	for _, r := range rs {
 		if r.fit {
-			// A fitted face is shrunk into its cell at bake time, so it needs no
-			// room of its own — and must not ask for any: its face bounding box is
-			// wide, and a face that joins the chain mid-session cannot resize a
-			// sheet that already has glyphs in it.
+			// Shrunk into its cell at bake time, so it needs no room — and must not ask
+			// for any: a face joining mid-session cannot resize a sheet with glyphs in it.
 			continue
 		}
 		bounds, err := r.f.Bounds(&r.buf, r.ppem, Hinting)
 		if err != nil {
 			continue
 		}
-		// Bounds are relative to the pen: x=0 at the cell's left edge, y=0 at the
-		// baseline, which sits r.ascent px below the top of the cell — each face
-		// measured against its own, because the fallback's is not the grid's.
+		// Bounds are relative to the pen: x=0 at the cell's left edge, y=0 at the baseline,
+		// r.ascent px below the cell's top — each face against its own.
 		l = max(l, -bounds.Min.X.Floor())
 		right = max(right, bounds.Max.X.Ceil()-cellW)
 		t = max(t, -(r.ascent + bounds.Min.Y.Floor()))
@@ -436,8 +417,7 @@ func BakeAtlas(fm *FontManager, maxTexture int) (*Atlas, error) {
 			f: fc.font, ppem: fc.ppem, ascent: fc.ascent, fit: fc.fitted, reach: fc.reach,
 		}
 		if style >= Fallback {
-			// Nothing in a first frame comes from the chain, and its faces run to
-			// tens of thousands of glyphs. Ensure bakes them on the frame that asks.
+			// Nothing in a first frame comes from the chain. Ensure bakes on demand.
 			continue
 		}
 		for _, gid := range fc.shaper.GlyphSet(fc.font.NumGlyphs()) {
@@ -449,15 +429,10 @@ func BakeAtlas(fm *FontManager, maxTexture int) (*Atlas, error) {
 	}
 	padL, padT, padR, padB := glyphPadding(rs, fm.CellWidth, fm.CellHeight)
 
-	// Icons are drawn from a twin of the face at the size that fills the cell's height,
-	// so they reach out of the cell sideways — see iconFit. That room has to be reserved
-	// here, before the twin exists: the sheet is laid out once and a face that turns up
-	// later cannot resize it. Only to the right, because PadLeft is already three cells
-	// of ligature reach-back and covers the other half with room to spare.
-	//
-	// A twin of some fallback face may want more than this. It does not get it: fitBox
-	// shrinks whatever would leave the slot, which costs that one face a little size
-	// rather than costing every glyph in the sheet a bigger slot.
+	// Icons reach out of their cell sideways (see iconFit), and the room has to be reserved
+	// before the twin exists — the sheet is laid out once. Only to the right: PadLeft is
+	// already three cells of ligature reach-back. A twin wanting more gets shrunk by
+	// fitBox, which costs that face some size rather than every glyph a bigger slot.
 	if _, _, overhang, ok := iconFit(fm.faces[Regular], fm.CellWidth, fm.CellHeight, fm.iconFill); ok {
 		padR = max(padR, overhang)
 	}

@@ -46,9 +46,7 @@ const (
 	// prompt asking for ✔ (U+2714) needs a face from somewhere else entirely.
 	Fallback Style = NumStyles
 
-	// maxFaces is the ceiling on the chain, because a Style is a byte and a Key is
-	// addressed by it. Reaching it means something is wrong, not that a session
-	// legitimately wanted 252 fallback faces.
+	// maxFaces: a Style is a byte. Reaching it means something is wrong.
 	maxFaces = 1 << 8
 )
 
@@ -86,15 +84,17 @@ type face struct {
 	ppem   fixed.Int26_6
 	ascent int
 
-	// fitted marks a face that was scaled into this grid rather than sized with
-	// it. Its glyphs are confined to their cell at bake time, which is what lets
-	// one turn up mid-session: the atlas slot was measured without it.
+	// fitted marks a face scaled into this grid rather than sized with it: its glyphs are
+	// confined to their cell at bake time, which is what lets one turn up mid-session.
 	fitted bool
 
-	// reach is how far outside its cell this face may draw to the left. Only an icon
-	// face has any: it is wider than a cell on purpose, and its overhang belongs on
-	// both sides so the icon sits centred. See Atlas.fitBox.
+	// reach is how far left of its cell the face may draw. Only an icon face has any, so
+	// its overhang sits on both sides and the icon comes out centred. See Atlas.fitBox.
 	reach int
+
+	// icon marks the twin icons are drawn from, whose glyphs the renderer leaves at the
+	// coverage the rasteriser gave them. See FontManager.IconFace.
+	icon bool
 
 	name string // for messages; the four styles are named by their Style
 }
@@ -107,9 +107,9 @@ type Source struct {
 	Index uint16 // the face inside a .ttc; 0 for a plain .ttf
 }
 
-// parseFont is the one way this package turns bytes into a face. Through the collection
-// parser even for a plain file — it reports a collection of one — because the CJK fonts
-// a fallback search lands on ship as .ttc, and sfnt.Parse refuses those outright.
+// parseFont goes through the collection parser even for a plain file, which it reports as a
+// collection of one: the CJK fonts a fallback search lands on ship as .ttc, and sfnt.Parse
+// refuses those.
 func parseFont(src Source) (*sfnt.Font, error) {
 	c, err := sfnt.ParseCollection(src.TTF)
 	if err != nil {
@@ -124,9 +124,8 @@ func parseFont(src Source) (*sfnt.Font, error) {
 // Finder supplies faces for runes nothing loaded covers — in practice the system's
 // installed fonts, searched on demand. See Library.
 type Finder interface {
-	// FindRune is the faces carrying r, best first. Several, because the best one
-	// on paper may be undrawable: a colour emoji font is bitmaps, and this package
-	// rasterises outlines, so the manager works down the list.
+	// FindRune is the faces carrying r, best first. Several, because the best on paper may
+	// be undrawable: a colour emoji font is bitmaps, and this package rasterises outlines.
 	FindRune(r rune) []Source
 }
 
@@ -137,10 +136,9 @@ type Options struct {
 	Styles [NumStyles]Source
 	Family string // the primary's name, for messages
 
-	// Fallback is searched in order for a rune the primary has no glyph for,
-	// before Finder is asked. This is where the embedded family goes when the
-	// primary came from the config: it is Nerd Font-patched, so it answers for
-	// every icon a prompt draws, and for ligature-free text it is a close match.
+	// Fallback is searched in order before Finder is asked. This is where the embedded
+	// family goes when the primary came from the config: being patched, it answers for
+	// every icon a prompt draws.
 	Fallback []Source
 
 	// Finder is the last resort, asked once per rune: any face on the system that
@@ -157,9 +155,7 @@ type Options struct {
 
 	MaxTexture int // the device's largest 2D texture; it bounds the atlas
 
-	// Warn reports what was worked around rather than failed on — a fallback that
-	// would not load, a face offered for a rune that cannot be rasterised. nil is
-	// silence.
+	// Warn reports what was worked around rather than failed on. nil is silence.
 	Warn func(string)
 }
 
@@ -185,8 +181,7 @@ type FontManager struct {
 
 	Atlas *Atlas
 
-	// The four styles first, then the fallback chain in the order it is searched.
-	// Atlas.rast is indexed the same way and grows with it.
+	// The four styles, then the chain in search order. Atlas.rast is indexed the same way.
 	faces []*face
 
 	finder Finder
@@ -198,9 +193,8 @@ type FontManager struct {
 	iconFill  float64
 	iconTwins map[Style]Style
 
-	// resolved is every rune the chain has been asked about, hits and misses
-	// alike. A miss has to be remembered too: without it, a screen full of a rune
-	// nothing has would search the system's fonts again on every frame.
+	// resolved is every rune the chain has been asked about, misses included: without
+	// those, a screen full of an uncovered rune would search the system on every frame.
 	resolved map[rune]Key
 }
 
@@ -298,8 +292,7 @@ func faceMetrics(f *sfnt.Font, ppem fixed.Int26_6) (cellW, cellH, ascent int, er
 	return adv.Ceil(), m.Height.Ceil(), m.Ascent.Ceil(), nil
 }
 
-// proportionalRunes counts the printable ASCII glyphs that do not advance by exactly
-// one cell — zero for a monospaced face, since the cell is one of their advances.
+// proportionalRunes counts the printable ASCII glyphs not advancing by exactly one cell.
 func proportionalRunes(f *sfnt.Font, ppem fixed.Int26_6, cellW int) int {
 	var buf sfnt.Buffer
 	want, n := fixed.I(cellW), 0
@@ -315,11 +308,10 @@ func proportionalRunes(f *sfnt.Font, ppem fixed.Int26_6, cellW int) int {
 	return n
 }
 
-// Nerd Font icons live in the two private-use areas, and they are the reason a terminal
-// needs a size policy of its own: the patcher's Mono variant fits every icon to the cell
-// *width*, and a cell is about twice as tall as it is wide, so an icon drawn at the size
-// the file says comes out half the height of the line. Other terminals fit them to the
-// cell height and let the width overhang; that is what iconFit reproduces.
+// Nerd Font icons need a size policy of their own: the patcher's Mono variant fits every
+// icon to the cell *width*, and a cell is twice as tall as it is wide, so an icon comes out
+// half the height of the line. Other terminals fit them to the height and let the width
+// overhang, which is what iconFit does.
 const (
 	iconPUALo, iconPUAHi     = 0xE000, 0xF8FF   // the BMP area: powerline, devicons, seti, ...
 	iconPlaneLo, iconPlaneHi = 0xF0000, 0xFFFFD // plane 15: Material Design, since Nerd Fonts v3
@@ -334,11 +326,9 @@ const (
 	DefaultIconFill = 0.8
 )
 
-// isIconRune reports whether r is an icon rather than a character — something drawn to be
-// looked at rather than read, and which therefore wants the whole height of the line.
-//
-// Note what is *not* here: the standard-Unicode symbols the patcher also carries, ✔ and ♥
-// and the box drawing, which appear in prose and have to stay text-sized.
+// isIconRune reports whether r is an icon rather than a character. Deliberately not here:
+// the standard-Unicode symbols the patcher also carries — ✔, ♥, box drawing — which appear
+// in prose and have to stay text-sized.
 func isIconRune(r rune) bool {
 	if r >= powerlineLo && r <= powerlineHi {
 		return false
@@ -346,27 +336,20 @@ func isIconRune(r rune) bool {
 	return r >= iconPUALo && r <= iconPUAHi || r >= iconPlaneLo && r <= iconPlaneHi
 }
 
-// iconSample is what a face is measured on, one rune per icon set: Font Awesome, Octicons,
-// Devicons, Codicons, Seti, Material Design. A fixed list, so the size a face is fitted to
-// is the same on every run — and a spread, because an icon set's glyphs are not all one
-// height and the median of a single set would not stand in for the rest.
+// iconSample is what a face is measured on: one rune per icon set, fixed so the fitted size
+// is the same on every run, and spread because a single set's glyphs are not all one height.
 var iconSample = [...]rune{
 	0xF015, 0xF07B, 0xF00C, 0xF0F3, 0xF09B, 0xF113, 0xF121, // Font Awesome, Octicons
 	0xE62B, 0xE712, 0xE725, 0xE73C, 0xE20F, 0xF1D0, // Seti, Devicons, Codicons
 	0xF0320, 0xF10FE, 0xF0868, // Material Design, plane 15
 }
 
-// iconFit is where an icon face draws: the size it is rasterised at, the baseline that
-// centres it in the cell, and how far it reaches out of the cell on each side, which the
-// atlas has to reserve room for before the face exists.
+// iconFit is where an icon face draws: its ppem, the baseline that centres it in the cell,
+// and how far it reaches out of the cell, which the atlas reserves room for before the face
+// exists. The size comes from the ink, not the metrics — the face is the same file at a
+// bigger ppem, so its ascent says nothing about where its icons sit.
 //
-// The size comes from the ink, not from the metrics: the face is the same file at a bigger
-// ppem, so its ascent and descent are bigger than the cell by construction and say nothing
-// about where the icons in it sit.
-//
-// fill is the share of the cell's height the ink is scaled to; zero or less turns the whole
-// thing off. ok is also false for a face with no icons to measure, which is most of them —
-// a text face gets no twin and its runes keep drawing at their own size.
+// fill of zero or less turns it off, and ok is false for a face with no icons to measure.
 func iconFit(base *face, cellW, cellH int, fill float64) (ppem fixed.Int26_6, ascent, overhang int, ok bool) {
 	if fill <= 0 {
 		return 0, 0, 0, false
@@ -375,10 +358,8 @@ func iconFit(base *face, cellW, cellH int, fill float64) (ppem fixed.Int26_6, as
 	if !ok {
 		return 0, 0, 0, false
 	}
-	// The box is in font units; these are the same numbers in the pixels the face draws
-	// text at. Measured in units and converted here rather than measured in pixels,
-	// because a bounding box rounded outward at both ends overstates a ten-pixel icon by
-	// a fifth, and the scale derived from it would fall as far short.
+	// In font units, converted here: a bounding box rounded outward at both ends overstates
+	// a ten-pixel icon by a fifth, and the scale would fall as far short.
 	perUnit := float64(base.ppem) / 64 / float64(base.font.UnitsPerEm())
 	a, b, w := perUnit*float64(above), perUnit*float64(below), perUnit*float64(width)
 
@@ -387,20 +368,16 @@ func iconFit(base *face, cellW, cellH int, fill float64) (ppem fixed.Int26_6, as
 		return 0, 0, 0, false // nothing to gain, and no room to reserve
 	}
 
-	// Centre the scaled median ink in the cell: the baseline is wherever it has to be for
-	// that, which is not where the face's own metrics would put it.
+	// Centre the scaled median ink in the cell, wherever that puts the baseline.
 	a, b = scale*a, scale*b
 	ascent = int(0.5*(float64(cellH)-(a+b)) + a + 0.5)
 	overhang = int(0.5*(scale*w-float64(cellW)) + 0.9999)
 	return fixed.Int26_6(float64(base.ppem) * scale), ascent, max(overhang, 0), true
 }
 
-// medianIconBox is the middle icon's box in font units: how far it reaches above and below
-// the baseline, and how wide it is. Medians rather than extremes, so one outsized glyph in
-// a set does not decide the size of every other.
-//
-// Units, not pixels: at ppem = upem a "pixel" is a font unit, so nothing is rounded away
-// and the caller can scale the numbers without inheriting the rounding.
+// medianIconBox is the middle icon's box in font units — medians, so one outsized glyph does
+// not decide the size of the rest. At ppem = upem a "pixel" is a font unit, so nothing is
+// rounded away.
 func medianIconBox(base *face) (above, below, width int, ok bool) {
 	var buf sfnt.Buffer
 	em := fixed.I(int(base.font.UnitsPerEm()))
@@ -434,23 +411,14 @@ func medianIconBox(base *face) (above, below, width int, ok bool) {
 
 // fitFace loads a face that was not designed for this grid and scales it into it.
 //
-// It cannot simply be asked for the family's ppem: the two are different designs at
-// different em sizes — Symbols Nerd Font Mono advances a full em where JetBrains Mono
-// advances 0.6 of one, so at a shared ppem its icons would come out nearly twice a
-// cell wide. Its ppem is derived from its own advance instead, which makes one glyph
-// one cell.
+// It cannot be asked for the family's ppem: Symbols Nerd Font Mono advances a full em where
+// JetBrains Mono advances 0.6 of one, so at a shared ppem its glyphs come out nearly twice
+// a cell wide. Nor can it share the baseline — the two put different fractions of their em
+// above it — so its own ascent-descent box is centred in the cell instead.
 //
-// Nor can it share the family's baseline. The two faces put different fractions of
-// their em above it, and an icon drawn on the family's baseline hangs low in the cell
-// by the difference; centring the face's own ascent-descent box in the cell puts it
-// back where the patched family draws the same icon, within a pixel.
-//
-// What is left over is per glyph, not per face: on a proportional face — and the
-// system will hand us those — the widest glyph is three times the median, so a scale
-// that fits every one of them would draw the rest tiny. The face is fitted to its
-// median and the outliers are shrunk one at a time, at bake time.
-//
-// No shaper: a fallback is reached one rune at a time, and nothing in it ligates.
+// Fitted to its median, not its widest: on a proportional face the widest glyph is three
+// times the median, and the outliers are shrunk one at a time at bake instead. No shaper —
+// a fallback is reached one rune at a time and nothing in it ligates.
 func fitFace(src Source, cellW, cellH int) (*face, error) {
 	f, err := parseFont(src)
 	if err != nil {
@@ -480,11 +448,8 @@ func fitFace(src Source, cellW, cellH int) (*face, error) {
 	}, nil
 }
 
-// medianAdvance is the middle advance in the face at ppem. Not the advance of some
-// representative letter, the way the family is measured — a symbol face carries icons,
-// so there is no 'M' to ask — and not the widest either: on Symbola the widest glyph
-// is 3 em against a 0.725 em median, and fitting that would leave every ordinary
-// symbol at a quarter of its size. On a monospaced face all three are the same number.
+// medianAdvance: no 'M' to ask on a symbol face, and not the widest either — on Symbola
+// that is 3 em against a 0.725 em median. On a monospaced face all three agree.
 func medianAdvance(f *sfnt.Font, buf *sfnt.Buffer, ppem fixed.Int26_6) (fixed.Int26_6, error) {
 	advances := make([]fixed.Int26_6, 0, faceGlyphs(f))
 	for gid := GID(1); gid < faceGlyphs(f); gid++ {
@@ -562,40 +527,29 @@ func (fm *FontManager) GlyphIndex(s Style, r rune) (GID, bool) {
 	return gid, true
 }
 
-// Resolve is the atlas key for the glyph picked for r, walking the fallback chain when
-// the family had nothing to pick: both the shaper and GlyphIndex answer GID 0 for a
-// rune the face does not cover, and GID 0 draws as the replacement box.
+// Resolve is the atlas key for the glyph picked for r, walking the fallback chain when the
+// family had nothing: both the shaper and GlyphIndex answer GID 0 for an uncovered rune.
 //
-// First hit in the chain wins, so its order is its priority — the patched family
-// before whatever the system offers, because a face that has an icon should draw the
-// icon. Past the end of the chain the finder is asked, once per rune, and whatever it
-// turns up joins the chain for every rune after.
+// First hit wins, so chain order is priority. Past its end the finder is asked, once per
+// rune, and what it turns up joins the chain. Every fallback is one face for all four
+// styles, so a missing glyph comes out upright in a bold run and costs one slot, not four.
 //
-// Every fallback is one face for all four styles, so a missing glyph comes out upright
-// inside a bold or italic run. That is also what keeps it to a single atlas slot
-// instead of four copies of the same glyph.
-//
-// A rune nothing covers comes back as GID 0, which is the box — a hole that reads as
-// missing rather than as a space.
+// A rune nothing covers comes back as GID 0 — the box, so a hole reads as missing.
 func (fm *FontManager) Resolve(s Style, gid GID, r rune) Key {
 	k := fm.resolveFace(s, gid, r)
 	if k.GID == 0 || !isIconRune(r) {
 		return k
 	}
-	// An icon is drawn from a twin of whichever face turned out to have it: the same
-	// file at the size that fills the cell's height. The glyph id carries over
-	// unchanged, because it is the same file — that is what makes this cost nothing.
+	// The twin is the same file at the icon size, so the glyph id carries over unchanged.
 	if twin, ok := fm.iconTwin(k.Style); ok {
 		return Key{Style: twin, GID: k.GID}
 	}
 	return k
 }
 
-// iconTwin is the face style's icons are drawn from, built on first use. ok is false when
-// the face has no icons to measure, or when the twin would be no bigger than the face.
-//
-// One twin serves all four styles, like a fallback does: an icon has no italic, and four
-// copies of the same glyph would only cost atlas slots.
+// iconTwin is the face style's icons are drawn from, built on first use. One twin serves all
+// four styles, like a fallback does: an icon has no italic, and four copies of one glyph
+// would only cost slots. ok is false for a face with no icons, or one already big enough.
 func (fm *FontManager) iconTwin(s Style) (Style, bool) {
 	if s < NumStyles {
 		s = Regular
@@ -617,13 +571,21 @@ func (fm *FontManager) iconTwin(s Style) (Style, bool) {
 	twin := Style(len(fm.faces))
 	fc := &face{
 		font: base.font, ppem: ppem, ascent: ascent,
-		fitted: true, reach: overhang, name: base.name + " icons",
+		fitted: true, reach: overhang, icon: true, name: base.name + " icons",
 	}
 	fm.faces = append(fm.faces, fc)
 	fm.Atlas.addFace(fc)
 	fm.iconTwins[s] = twin
 	fm.warnf("icons from %s drawn at %v, %v for text", base.name, ppem, base.ppem)
 	return twin, true
+}
+
+// IconFace reports whether the style is a twin icons are drawn from. Their glyphs are line
+// art at twice the text size, where the stem darkening a light theme wants for text only
+// closes the counters — the renderer asks so it can leave their coverage alone.
+func (fm *FontManager) IconFace(s Style) bool {
+	fc := fm.face(s)
+	return fc != nil && fc.icon
 }
 
 // resolveFace is Resolve without the icon policy: which face and glyph id carry r.
@@ -644,12 +606,9 @@ func (fm *FontManager) resolveFace(s Style, gid GID, r rune) Key {
 	return k
 }
 
-// search is Resolve's slow half, run once per rune: the loaded chain first, then the
-// finder, whose answer is added to the chain.
-//
-// A face joins the chain rather than being loaded per rune because the atlas holds one
-// rasterizer per face and every glyph baked from it has to keep working — and because
-// the next unknown rune is usually from the same script as this one.
+// search is Resolve's slow half, run once per rune: the loaded chain, then the finder. Its
+// answer joins the chain — the atlas holds one rasterizer per face, and the next unknown
+// rune is usually from the same script.
 func (fm *FontManager) search(r rune) Key {
 	for i := int(Fallback); i < len(fm.faces); i++ {
 		fc := fm.faces[i]
@@ -675,8 +634,7 @@ func (fm *FontManager) search(r rune) Key {
 			continue // the finder was wrong about the coverage
 		}
 		if segs, err := fc.font.LoadGlyph(&fc.buf, gid, fc.ppem, nil); err != nil || len(segs) == 0 {
-			// No outline to rasterise. A colour emoji face is bitmaps, and this is
-			// where that becomes visible: skip it and try the next candidate.
+			// No outline: a colour emoji face is bitmaps. Try the next candidate.
 			fm.warnf("%s has %U but no outline for it", cand.Name, r)
 			continue
 		}
@@ -691,12 +649,9 @@ func (fm *FontManager) search(r rune) Key {
 	return Key{}
 }
 
-// forgetMisses drops the remembered boxes, so the next frame asks again now that there
-// is one more face to ask. The hits stay: the face that answered has not changed.
-//
-// A search only offers a handful of candidates per rune, so a face loaded for one rune
-// can easily carry another that was given up on before it was there — a CJK collection
-// reached for one ideograph holds twenty thousand more.
+// forgetMisses drops the remembered boxes so the next frame asks again, now that there is
+// one more face: a CJK collection reached for one ideograph holds twenty thousand more. The
+// hits stay — the face that answered has not changed.
 func (fm *FontManager) forgetMisses() {
 	for r, k := range fm.resolved {
 		if k.GID == 0 {

@@ -16,13 +16,11 @@ import (
 //go:embed text.wgsl
 var textShader string
 
-// The embedded family: four styles of Nerd Font-patched JetBrains Mono, which is the
-// default primary and, when the config names another font, the first fallback. It is
-// the only font in the binary — a patched face is what carries the ligatures and the
-// icons, and anything else a session turns out to need is on the machine already.
+// The embedded family: four styles of Nerd Font-patched JetBrains Mono — the default
+// primary, and the first fallback when the config names another font. The only font in the
+// binary; anything else a session needs is on the machine already.
 //
-// assets/ holds the whole family, and the NL ("no ligatures") variants must not be
-// used here.
+// assets/ holds the whole family, and the NL ("no ligatures") variants must not be used.
 var (
 	//go:embed assets/JetBrainsMonoNerdFontMono-Light.ttf
 	regularTTF []byte
@@ -45,6 +43,10 @@ type instance struct {
 	rect  [4]float32 // x, y, w, h in px
 	uv    [4]float32 // u0, v0, u1, v1
 	color [4]float32
+	// darken is 1 for a glyph that wants the theme's coverage gamma and 0 for one drawn as
+	// the rasteriser made it. Per instance rather than per frame because icons and text
+	// share the pass; see font.FontManager.IconFace.
+	darken float32
 }
 
 type text struct {
@@ -148,6 +150,7 @@ func newText(device *wgpu.Device, queue *wgpu.Queue, format wgpu.TextureFormat, 
 					{Format: wgpu.VertexFormatFloat32x4, Offset: 0, ShaderLocation: 0},
 					{Format: wgpu.VertexFormatFloat32x4, Offset: 16, ShaderLocation: 1},
 					{Format: wgpu.VertexFormatFloat32x4, Offset: 32, ShaderLocation: 2},
+					{Format: wgpu.VertexFormatFloat32, Offset: 48, ShaderLocation: 3},
 				},
 			}},
 		},
@@ -187,18 +190,13 @@ func newText(device *wgpu.Device, queue *wgpu.Queue, format wgpu.TextureFormat, 
 	return t, nil
 }
 
-// newFontManager loads the faces the grid is drawn with.
+// newFontManager loads the faces the grid is drawn with: the font the config named, then
+// the embedded family, then whatever the machine has. The middle link is what makes the
+// config safe — a plain font from it still gets its icons from a face designed for a
+// terminal.
 //
-// The chain is: the font the config named, then the embedded family, then whatever the
-// machine has. The middle link is the one that makes the config safe to use — the
-// embedded face is patched, so a plain font from the config still gets its icons and
-// its box drawing from something designed for a terminal, before the search widens to
-// fonts that were not.
-//
-// A config font that cannot be loaded is a warning, not a failure: the terminal comes
-// up on the embedded family instead. That covers a typo in the name as well as a font
-// whose four styles disagree about the cell, which is fatal to a grid and not obvious
-// from the file name.
+// A config font that will not load is a warning, not a failure: that covers a typo as well
+// as a family whose four styles disagree about the cell, which is fatal to a grid.
 func newFontManager(sizePt float64, maxTexture int) (*font.FontManager, error) {
 	warn := func(s string) { fmt.Fprintln(os.Stderr, "gty: font:", s) }
 	lib := &font.Library{Warn: warn}
@@ -227,8 +225,7 @@ func newFontManager(sizePt float64, maxTexture int) (*font.FontManager, error) {
 			}
 			custom := opts
 			custom.Styles, custom.Family = styles, fontFamily
-			// The embedded family drops to the head of the chain, one face: a
-			// fallback is styleless, so bold and italic would only cost slots.
+			// One face: a fallback is styleless, so bold and italic would only cost slots.
 			custom.Fallback = []font.Source{{Name: embeddedFamily, TTF: regularTTF}}
 			if fm, err := font.NewManager(custom); err == nil {
 				return fm, nil
@@ -459,9 +456,14 @@ func (t *text) Layout(panes []*pane, focused *pane) {
 			y := originY + float32(i-from)*cellH - float32(a.PadTop)
 			for col, gid := range gids {
 				cl := cellAt(row.cells, col)
-				// Resolve, not the gid alone: a rune the family has no glyph for
-				// shapes to 0, and the fallback chain is where it is drawn from.
-				u, v := a.Ensure(t.fm.Resolve(cl.Style, gid, cl.Rune))
+				// Resolve, not the gid alone: an uncovered rune shapes to 0, and the
+				// chain is where it is drawn from.
+				k := t.fm.Resolve(cl.Style, gid, cl.Rune)
+				u, v := a.Ensure(k)
+				darken := float32(1)
+				if t.fm.IconFace(k.Style) {
+					darken = 0
+				}
 				c, _ := cl.colors()
 				if unfocused {
 					// Dim the ink and leave the paint: brightness is the focus cue, and
@@ -472,9 +474,10 @@ func (t *text) Layout(panes []*pane, focused *pane) {
 					c = backgroundRGBA
 				}
 				t.instances = append(t.instances, instance{
-					rect:  [4]float32{originX + float32(col)*cellW - float32(a.PadLeft), y, slotW, slotH},
-					uv:    [4]float32{u, v, u + slotW/atlasW, v + slotH/atlasH},
-					color: c,
+					rect:   [4]float32{originX + float32(col)*cellW - float32(a.PadLeft), y, slotW, slotH},
+					uv:     [4]float32{u, v, u + slotW/atlasW, v + slotH/atlasH},
+					color:  c,
+					darken: darken,
 				})
 			}
 		}

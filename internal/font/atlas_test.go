@@ -292,19 +292,15 @@ func TestAtlasNotdefBox(t *testing.T) {
 	}
 }
 
-// TestAtlasLazyInkFitsEverySlot walks whole faces through Ensure. This is what the
-// padding measurement is for: a glyph baked later cannot resize the grid it lands in,
-// so every one of them has to fit the slot chosen at startup. The fallback chain is in
-// here because every face in it is measured against a baseline of its own — their ink
-// is placed by numbers nothing else in the sheet uses.
+// TestAtlasLazyInkFitsEverySlot walks whole faces through Ensure: a glyph baked later cannot
+// resize the grid, so every one has to fit the slot chosen at startup. The chain is in here
+// because each of its faces has a baseline of its own.
 func TestAtlasLazyInkFitsEverySlot(t *testing.T) {
 	fm := newTestManager(t)
 	a := fm.Atlas
 	slotBox := image.Rect(0, 0, a.SlotW, a.SlotH)
 
-	// Ask for an icon first, so the walk covers its twin too: a twin is the one face
-	// deliberately allowed to draw outside its cell, which makes it the one most likely
-	// to leave its slot.
+	// An icon first, so the walk covers its twin — the one face allowed outside its cell.
 	if gid, ok := fm.GlyphIndex(Regular, testIcon); ok {
 		fm.Resolve(Regular, gid, testIcon)
 	}
@@ -418,27 +414,20 @@ func mustGlyph(t *testing.T, fm *FontManager, r rune) GID {
 	return gid
 }
 
-// TestFallbackMatchesTheFamily is what the fitted ppem and baseline are for. The patched
-// family carries the same glyphs as the symbol face, so the same rune can be drawn both
-// ways and the two compared: a pixel apart is the target, since the faces are different
-// designs, and anything more means the scale or the baseline is wrong.
+// TestFallbackMatchesTheFamily is what the fitted ppem and baseline are for: the family and
+// the symbol face carry the same glyphs, so the same rune drawn both ways has to land in the
+// same place. Both sides go through Resolve, so both get the icon policy.
 //
-// Both sides go through Resolve, so both get the same policy — an icon from either face is
-// drawn from that face's twin, at the size that fills the cell's height. Comparing a
-// twinned icon against an untwinned one would only be measuring the twin.
-//
-// Powerline separators are left out deliberately. The patcher stretches those to the full
-// cell so a prompt's arrows tile with no seam; the standalone symbol face draws them at
-// their natural size, so from the fallback they come out around half the cell tall.
+// Powerline is left out: the patcher stretches those to the full cell, the standalone symbol
+// face does not.
 func TestFallbackMatchesTheFamily(t *testing.T) {
 	o := testOptions(t)
 	o.Fallback = []Source{source(t, testSymbolFace)}
 	fm := newManager(t, o)
 	a := fm.Atlas
 
-	// Two pixels, not one: each face is fitted by its own median icon now, so a single
-	// icon can land a pixel either side of where the other face puts it — that is the
-	// difference between the two designs' spreads, not a mistake in the fit.
+	// Two pixels: each face is fitted by its own median, so one icon can land a pixel either
+	// side of where the other face puts it.
 	const tolerance = 2
 
 	// One rune per icon set the fallback is likely to be asked for: Font Awesome,
@@ -522,14 +511,9 @@ func TestFallbackDingbatSitsInItsCell(t *testing.T) {
 	t.Logf("%U ink %v, the family's ✓ %v, cell %v", rune(testDingbat), box, want, cell)
 }
 
-// TestFitShrinksAWideGlyph: a fallback face is fitted to the cell by its median glyph,
-// so its outliers are still too big — a ligature several cells wide, a CJK ideograph,
-// whatever the machine hands over. Those are shrunk one at a time as they are baked,
-// because the slot was measured before the face existed and cannot grow to suit it.
-//
-// The probe is the family itself, loaded as a fallback: its ligature glyphs reach across
-// four cells, which is the same shape of problem a system face turns up with, and it is
-// in the repository rather than on the machine.
+// TestFitShrinksAWideGlyph: a face fitted by its median glyph still has outliers too big for
+// the slot, and those are shrunk as they are baked. The probe is the family loaded as a
+// fallback — its ligatures reach four cells, the same problem a system face brings.
 func TestFitShrinksAWideGlyph(t *testing.T) {
 	o := testOptions(t)
 	o.Fallback = []Source{source(t, testFace[Regular])}
@@ -562,9 +546,7 @@ func TestFitShrinksAWideGlyph(t *testing.T) {
 		t.Fatalf("glyph %d baked blank", wide)
 	}
 
-	// The box a fitted glyph has to end up in: the slot without the reach-back a
-	// ligature is drawn with. Reaching into it would paint over the cells before this
-	// one, which a fallback has no business doing.
+	// The slot without the ligature reach-back, which a fallback has no business using.
 	fit := image.Rect(a.PadLeft, 0, a.SlotW, a.SlotH)
 	if !box.In(fit) {
 		t.Errorf("glyph %d: ink %v is outside %v", wide, box, fit)
@@ -576,17 +558,14 @@ func TestFitShrinksAWideGlyph(t *testing.T) {
 	t.Logf("glyph %d: %d px wide unfitted, %v baked, cell %d px", wide, wideW, box, fm.CellWidth)
 }
 
-// TestIconFillsTheCellHeight is the point of the icon twin. A Nerd Font's Mono variant
-// fits every icon to the cell's *width*, and a cell is about twice as tall as it is wide,
-// so a prompt's icons come out half the height of the line. They are drawn from a twin of
-// the face at the size that fills the height instead, which makes them wider than a cell —
-// deliberately, and only into the room the atlas reserved for it.
+// TestIconFillsTheCellHeight is the point of the icon twin: the Mono variant fits icons to
+// the cell's width, so they come out half the line's height. The twin fills the height
+// instead, which makes them wider than a cell — into the room the atlas reserved.
 func TestIconFillsTheCellHeight(t *testing.T) {
 	fm := newManager(t, testOptions(t))
 	a := fm.Atlas
 
-	// The box a twin is allowed: its cell, the reach it was given on the left, and the
-	// family's own bleed on the right. In slot coordinates.
+	// The box a twin is allowed, in slot coordinates.
 	fit := image.Rect(0, 0, a.SlotW, a.SlotH)
 	cell := image.Rect(a.PadLeft, a.PadTop, a.PadLeft+fm.CellWidth, a.PadTop+fm.CellHeight)
 
@@ -619,8 +598,7 @@ func TestIconFillsTheCellHeight(t *testing.T) {
 		if !got.In(fit) {
 			t.Errorf("%U: ink %v leaves its %v slot", r, got, fit)
 		}
-		// Centred on the cell, within a pixel of rounding: an icon wider than its cell
-		// has to overhang both sides, not sit off to one.
+		// Centred on the cell: a wide icon overhangs both sides, not one.
 		if off := (got.Min.X + got.Max.X) - (cell.Min.X + cell.Max.X); off < -2 || off > 2 {
 			t.Errorf("%U: ink %v is off the cell's centre %v by %d px", r, got, cell, off)
 		}
@@ -630,8 +608,7 @@ func TestIconFillsTheCellHeight(t *testing.T) {
 		t.Fatal("no icons in the sample were drawn")
 	}
 
-	// The face is fitted by its median icon, so that is what lands on the target; the
-	// individual icons spread around it, which is the design's own spread kept intact.
+	// Fitted by the median, so that is what lands on the target; the rest spread around it.
 	slices.Sort(heights)
 	median, want := heights[len(heights)/2], DefaultIconFill*float64(fm.CellHeight)
 	if float64(median) < want-2 || float64(median) > want+2 {
@@ -641,9 +618,8 @@ func TestIconFillsTheCellHeight(t *testing.T) {
 	t.Logf("%d icons, heights %v, cell %dx%d", len(heights), heights, fm.CellWidth, fm.CellHeight)
 }
 
-// TestPowerlineIsNotScaled: the patcher already stretches the separators to the full cell
-// so a prompt's arrows tile with no seam. Scaling them would open the seam back up and
-// push each arrow over its neighbour, so they are excluded from the icon range.
+// TestPowerlineIsNotScaled: the patcher already stretches the separators to the full cell so
+// arrows tile with no seam, so they are excluded from the icon range.
 func TestPowerlineIsNotScaled(t *testing.T) {
 	fm := newManager(t, testOptions(t))
 	a := fm.Atlas
@@ -674,9 +650,8 @@ func TestPowerlineIsNotScaled(t *testing.T) {
 	}
 }
 
-// TestPowerlineWouldMoveIfScaled proves the exclusion earns its place: bake the same
-// separator through the icon twin on purpose and it does move, so leaving powerline out of
-// the icon range is doing work rather than describing a rule with no effect.
+// TestPowerlineWouldMoveIfScaled proves the exclusion earns its place: forced through the
+// twin, the separator does move.
 func TestPowerlineWouldMoveIfScaled(t *testing.T) {
 	fm := newManager(t, testOptions(t))
 	a := fm.Atlas
@@ -702,8 +677,7 @@ func TestPowerlineWouldMoveIfScaled(t *testing.T) {
 		was, got, fm.CellWidth, fm.CellHeight)
 }
 
-// TestIconScaleOff: the knob's other end has to give back exactly the old rendering — the
-// slot the atlas reserves and the pixels an icon lands on.
+// TestIconScaleOff: the knob's other end gives back the old rendering, slot included.
 func TestIconScaleOff(t *testing.T) {
 	on := newManager(t, testOptions(t))
 

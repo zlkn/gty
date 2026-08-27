@@ -31,8 +31,7 @@ import (
 //
 // Not safe for concurrent use.
 type Library struct {
-	// Warn is told, once, if the index could not be built — the one thing about the
-	// machine's fonts a caller can act on. nil is silence.
+	// Warn is told once if the index could not be built. nil is silence.
 	Warn func(string)
 
 	once   sync.Once
@@ -40,8 +39,7 @@ type Library struct {
 	err    error
 	told   bool // Warn has had the index error
 
-	// Files already read, so a family whose four styles live in one collection, or
-	// a face that answers for a second rune, is not read from disk twice.
+	// Files already read, so a collection holding four styles is read once.
 	loaded map[string][]byte
 }
 
@@ -61,20 +59,16 @@ func (l *Library) index() ([]fontscan.Footprint, error) {
 	return l.prints, l.err
 }
 
-// silent swallows fontscan's own commentary, which is about the state of the machine's
-// fontconfig files — unresolvable includes, a config path that is a directory. A
-// terminal writing that to its own stderr on the first frame that wants a dingbat is
-// noise the user cannot act on; the one thing they can act on is an index that would
-// not build, and that comes back as an error.
+// silent swallows fontscan's commentary about the machine's fontconfig files, which a user
+// cannot act on. What they can act on — an index that would not build — comes back as an
+// error.
 type silent struct{}
 
 func (silent) Printf(string, ...any) {}
 
-// Family is the four styles of the named family, as NewManager wants them. Every
-// style is filled: a family with no italic of its own gets its regular there, because
-// one grid serves all four and a substitute from somewhere else would not fit it.
-//
-// missing names the styles that were substituted, for the caller to report.
+// Family is the four styles of the named family. Every style is filled — a family with no
+// italic gets its own regular, because one grid serves all four — and missing names the
+// ones substituted.
 func (l *Library) Family(name string) (styles [NumStyles]Source, missing []Style, err error) {
 	prints, err := l.index()
 	if err != nil {
@@ -112,16 +106,10 @@ func (l *Library) Family(name string) (styles [NumStyles]Source, missing []Style
 	return styles, missing, nil
 }
 
-// FindRune is the Finder half: faces that carry r, best first.
-//
-// Best is a monospaced-looking face before a proportional one and a smaller coverage
-// before a larger one. Both are about looking right in a grid: a face whose glyphs are
-// all one width needs no shrinking to fit a cell, and among the rest the specialised
-// symbol face is a better answer than the 40,000-glyph pan-Unicode one, which tends to
-// draw a symbol as an afterthought.
-//
-// The list is capped: the caller only walks it until a face rasterises, and reading
-// every font on the machine that happens to have some rune is not worth it.
+// FindRune is the faces carrying r, best first: monospaced-looking before proportional,
+// smaller coverage before larger. A face of one width needs no shrinking to fit a cell, and
+// a specialised symbol face draws a symbol better than a pan-Unicode one does. Capped,
+// because the caller only walks it until a face rasterises.
 func (l *Library) FindRune(r rune) []Source {
 	prints, err := l.index()
 	if err != nil {
@@ -156,9 +144,8 @@ func (l *Library) FindRune(r rune) []Source {
 	return out
 }
 
-// monoRank sorts monospaced families first. The name is all there is to go on:
-// a footprint carries no such flag, and reading the file to find out would defeat
-// the point of having an index.
+// monoRank sorts monospaced families first, by name: a footprint carries no such flag, and
+// reading the file would defeat the point of the index.
 func monoRank(family string) int {
 	if strings.Contains(family, "mono") { // families are stored normalized
 		return 0
@@ -178,9 +165,8 @@ func (l *Library) read(fp fontscan.Footprint) ([]byte, error) {
 	return ttf, nil
 }
 
-// pickAspect is the footprint whose aspect matches the style: bold means weight 700 or
-// more, italic means either italic or oblique. A family with several matches keeps the
-// first, which is the scan's own order.
+// pickAspect matches the style: bold is weight 700 or more, italic is italic or oblique.
+// Several matches keep the first, which is the scan's own order.
 func pickAspect(prints []fontscan.Footprint, style Style) (fontscan.Footprint, bool) {
 	wantBold, wantItalic := style&Bold != 0, style&Italic != 0
 	for _, fp := range prints {

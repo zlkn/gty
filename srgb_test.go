@@ -7,8 +7,7 @@ import (
 	"github.com/oliverbestmann/webgpu/wgpu"
 )
 
-// This file is the only cover the transfer function has on a machine with no GPU: every
-// test in render_test.go skips without an adapter.
+// The only cover the transfer function has without a GPU: render_test.go skips there.
 
 func TestSrgbToLinear(t *testing.T) {
 	for _, tc := range []struct {
@@ -16,8 +15,7 @@ func TestSrgbToLinear(t *testing.T) {
 		in   float64
 		want float64
 	}{
-		// Both ends are fixed points, and they have to stay that way: #000000 and
-		// #ffffff must survive the round trip through the GPU's encode exactly.
+		// Fixed points: #000000 and #ffffff must survive the round trip exactly.
 		{"black", 0, 0},
 		{"white", 1, 1},
 		// The join between the two segments, from either side.
@@ -36,8 +34,7 @@ func TestSrgbToLinear(t *testing.T) {
 	}
 }
 
-// TestSrgbToLinearIsMonotonic: the curve is what stands between the config file and the
-// screen, so an ordering it does not preserve would reorder the palette.
+// TestSrgbToLinearIsMonotonic: an ordering the curve does not preserve reorders the palette.
 func TestSrgbToLinearIsMonotonic(t *testing.T) {
 	prev := -1.0
 	for i := range 256 {
@@ -73,9 +70,8 @@ func TestIsSrgbFormat(t *testing.T) {
 	}
 }
 
-// TestPickFormat: an sRGB variant wins wherever the driver put it, and the driver's own
-// order decides between two of them. Deterministic, because the decode is keyed off
-// whatever this returns.
+// TestPickFormat: an sRGB variant wins wherever the driver put it, and its order decides
+// between two. Deterministic, because the decode is keyed off the result.
 func TestPickFormat(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -112,8 +108,8 @@ func TestPickFormat(t *testing.T) {
 	}
 }
 
-// TestClearValueDecodesOnlyForSrgbTargets: the clear is the one colour no shader touches,
-// so this is the whole of its correctness.
+// TestClearValueDecodesOnlyForSrgbTargets: no shader touches the clear, so this is all of
+// its correctness.
 func TestClearValueDecodesOnlyForSrgbTargets(t *testing.T) {
 	c := [4]float32{0.949, 0.259, 0, 0.5}
 
@@ -141,8 +137,8 @@ func TestSrgbFlag(t *testing.T) {
 	}
 }
 
-// TestCoverageExponent: which way the coverage curve bends is a property of the theme,
-// and getting the direction wrong would thin the very text it is meant to thicken.
+// TestCoverageExponent: the direction is a property of the theme, and the wrong one thins
+// the text it is meant to thicken.
 func TestCoverageExponent(t *testing.T) {
 	light := [4]float32{0.949, 0.949, 0.949, 1} // #f2f2f2
 	dark := [4]float32{0.259, 0.259, 0.259, 1}  // #424242
@@ -170,8 +166,8 @@ func TestCoverageExponent(t *testing.T) {
 	}
 }
 
-// TestRelLuminance: a mean of sRGB bytes is not a brightness, which is the whole reason
-// this decodes first. #757575 sits at the sRGB midpoint and well below half the light.
+// TestRelLuminance: a mean of sRGB bytes is not a brightness — #757575 is the sRGB midpoint
+// and well below half the light.
 func TestRelLuminance(t *testing.T) {
 	if got := relLuminance([4]float32{0, 0, 0, 1}); got != 0 {
 		t.Errorf("black has luminance %v, want 0", got)

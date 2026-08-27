@@ -25,11 +25,9 @@ const (
 	wantCellHeight = 19
 	wantAscent     = 15
 
-	// testIcon is a Nerd Font glyph both the patched family and the symbol face carry,
-	// which is what makes the chain testable at all: the same icon can be drawn both
-	// ways and the two compared. testDingbat is in the general face only — it is what
-	// a fish prompt draws for a command that succeeded, and it was a hollow box until
-	// the chain had a second link. testMissing is in none of them.
+	// testIcon is carried by both the family and the symbol face, so the same icon can be
+	// drawn both ways and compared. testDingbat is in the general face only — a fish prompt
+	// draws it for a command that succeeded. testMissing is in none of them.
 	testIcon    = 0xF015  // Font Awesome's house
 	testDingbat = 0x2714  // ✔, where the family has only the light ✓ U+2713
 	testMissing = 0x1F600 // an emoji: no glyph anywhere in this build
@@ -45,11 +43,9 @@ var testFace = [NumStyles]string{
 	BoldItalic: "../../assets/JetBrainsMonoNerdFontMono-Italic.ttf",
 }
 
-// The two faces the tests reach for outside the family: a symbol face, which has the
-// icons and none of the dingbats, and a general monospace face, which has the dingbats
-// and none of the icons. The app embeds neither — its chain gets them from the machine
-// — so here they stand in for whatever a Finder would turn up, and the tests stay
-// independent of what happens to be installed.
+// The two faces the tests reach for outside the family: a symbol face with the icons and no
+// dingbats, and a general monospace face with the dingbats and no icons. The app embeds
+// neither, so here they stand in for whatever a Finder would turn up.
 const (
 	testSymbolFace  = "../../assets/SymbolsNerdFontMono-Regular.ttf"
 	testGeneralFace = "../../assets/DejaVuSansMono.ttf"
@@ -225,10 +221,8 @@ func TestASCIIInkFitsCell(t *testing.T) {
 	}
 }
 
-// TestFallbackFacesFitTheGrid: every face in the chain is a different design at a
-// different em size, so each is scaled into the grid rather than sized with it. The
-// median glyph has to come out one cell wide — fitting the widest instead would leave
-// a proportional face drawing everything at a quarter size.
+// TestFallbackFacesFitTheGrid: each face in the chain is scaled into the grid by its median
+// glyph — fitting the widest instead would draw a proportional face at a quarter size.
 func TestFallbackFacesFitTheGrid(t *testing.T) {
 	o := testOptions(t)
 	o.Fallback = []Source{source(t, testSymbolFace), source(t, testGeneralFace)}
@@ -263,10 +257,8 @@ func TestFallbackFacesFitTheGrid(t *testing.T) {
 	}
 }
 
-// TestResolveWalksTheFallbackChain covers the one decision the chain is: which face a
-// cell is drawn from, and in what order the question is asked. The icon is in the
-// loaded chain, the dingbat only in what the finder offers, so the two together prove
-// the order as well as the hand-off.
+// TestResolveWalksTheFallbackChain covers which face a cell is drawn from and in what order
+// the question is asked: the icon is in the loaded chain, the dingbat only in the finder's.
 func TestResolveWalksTheFallbackChain(t *testing.T) {
 	o := testOptions(t)
 	o.Fallback = []Source{source(t, testSymbolFace)}
@@ -285,9 +277,8 @@ func TestResolveWalksTheFallbackChain(t *testing.T) {
 		t.Errorf("the finder was asked %d times for a rune the family has", finder.calls)
 	}
 
-	// Faces are named after where they came from, and an icon face after the face it is
-	// a twin of, so the name is what says which link answered — the index no longer
-	// does, because an icon is drawn from a twin appended after the whole chain.
+	// The name says which link answered; the index no longer does, because an icon comes
+	// from a twin appended after the chain.
 	icon := fm.Resolve(Italic, 0, testIcon)
 	if icon.GID == 0 || !strings.HasPrefix(fm.FaceName(icon.Style), symbolFaceName) {
 		t.Errorf("%U resolved to %s (%q) glyph %d, want the symbol face in the loaded chain",
@@ -322,9 +313,9 @@ func TestResolveWalksTheFallbackChain(t *testing.T) {
 	}
 }
 
-// TestResolveAsksTheFinderOncePerRune: Resolve runs for every cell of every frame, and
-// a search walks the machine's fonts. Both the hit and the miss have to be remembered,
-// or a screen full of an uncovered rune would search again sixty times a second.
+// TestResolveAsksTheFinderOncePerRune: a search walks the machine's fonts, so hits and
+// misses alike are remembered — otherwise an uncovered rune is searched sixty times a
+// second.
 func TestResolveAsksTheFinderOncePerRune(t *testing.T) {
 	o := testOptions(t)
 	finder := &fakeFinder{faces: []Source{source(t, testGeneralFace)}}
@@ -351,10 +342,9 @@ func TestResolveAsksTheFinderOncePerRune(t *testing.T) {
 	}
 }
 
-// TestResolveSkipsAFaceItCannotDraw: a finder answers with candidates, not an answer.
-// A face that will not parse, or that turns out not to have the rune after all, is
-// stepped over rather than taken on trust — in the app that is what happens to a colour
-// emoji font, which has the rune and no outline to draw it with.
+// TestResolveSkipsAFaceItCannotDraw: a finder answers with candidates, not an answer. A face
+// that will not parse, or lacks the rune after all, is stepped over — in the app that is a
+// colour emoji font, which has the rune and no outline.
 func TestResolveSkipsAFaceItCannotDraw(t *testing.T) {
 	o := testOptions(t)
 	o.Finder = &fakeFinder{faces: []Source{
@@ -378,11 +368,9 @@ func TestResolveSkipsAFaceItCannotDraw(t *testing.T) {
 	}
 }
 
-// TestPromptRunesResolve is the regression the chain was added for. The first two
-// lines are every non-ASCII rune a real fish prompt draws — four Nerd Font icons from
-// the family, and the two dingbats that used to come out as hollow boxes because
-// neither the family nor the symbol face has them. A rune resolving to GID 0 here is
-// a box on screen.
+// TestPromptRunesResolve is the regression the chain was added for: the first two lines are
+// every non-ASCII rune a real fish prompt draws, including the two dingbats that used to come
+// out as hollow boxes. GID 0 here is a box on screen.
 func TestPromptRunesResolve(t *testing.T) {
 	fm := newTestManager(t)
 
@@ -402,8 +390,7 @@ func TestPromptRunesResolve(t *testing.T) {
 	}
 }
 
-// TestManagerWithoutFallback: the chain is optional and so is the finder — leaving
-// both out has to cost nothing but the fallback itself.
+// TestManagerWithoutFallback: both are optional, and leaving them out costs nothing else.
 func TestManagerWithoutFallback(t *testing.T) {
 	fm := newManager(t, testOptions(t))
 
@@ -425,8 +412,8 @@ func TestManagerWithoutFallback(t *testing.T) {
 	}
 }
 
-// TestEmbeddedFamilyIsMonospaced: the not-monospaced warning has to stay quiet for the
-// face this binary ships with, or every start-up would carry a scare line about it.
+// TestEmbeddedFamilyIsMonospaced: the not-monospaced warning has to stay quiet for the face
+// this binary ships with.
 func TestEmbeddedFamilyIsMonospaced(t *testing.T) {
 	fm := newTestManager(t)
 
@@ -467,8 +454,39 @@ func TestIsIconRune(t *testing.T) {
 	}
 }
 
-// TestIconTwinIsSharedAndStyleless: an icon has no italic, so all four styles draw it from
-// one twin — and the twin is built once, however many icons ask for it.
+// TestIconFaceIsOnlyTheTwin: the renderer asks by face which glyphs to leave at the
+// coverage they were rasterised with, so nothing but the twin may answer yes — a fallback
+// draws text and wants the same darkening as the family.
+func TestIconFaceIsOnlyTheTwin(t *testing.T) {
+	o := testOptions(t)
+	o.Fallback = []Source{source(t, testGeneralFace)}
+	fm := newManager(t, o)
+
+	gid, ok := fm.GlyphIndex(Regular, testIcon)
+	if !ok {
+		t.Fatalf("the family has no %U", rune(testIcon))
+	}
+	twin := fm.Resolve(Regular, gid, testIcon).Style
+	if !fm.IconFace(twin) {
+		t.Errorf("the twin %s says it is not an icon face", twin)
+	}
+	// The dingbat pulls the fallback into the chain, so the loop sees a fitted face that
+	// is not a twin — the case a check on fitted alone would get wrong.
+	if got := fm.Resolve(Regular, 0, testDingbat).Style; got == twin {
+		t.Fatalf("%U came from the twin %s", rune(testDingbat), got)
+	}
+	for s := Style(0); int(s) < fm.NumFaces(); s++ {
+		if s != twin && fm.IconFace(s) {
+			t.Errorf("%s (%s) says it is an icon face", s, fm.FaceName(s))
+		}
+	}
+	if fm.IconFace(Style(fm.NumFaces())) {
+		t.Error("a style past the chain says it is an icon face")
+	}
+}
+
+// TestIconTwinIsSharedAndStyleless: an icon has no italic, so all four styles share one
+// twin, built once.
 func TestIconTwinIsSharedAndStyleless(t *testing.T) {
 	fm := newManager(t, testOptions(t))
 
@@ -503,9 +521,8 @@ func TestIconTwinIsSharedAndStyleless(t *testing.T) {
 	}
 }
 
-// TestNonIconRunesAreNotScaled: the patched family carries plenty of standard Unicode
-// symbols too, and those are read as text — a heart in a sentence, a check mark after a
-// command. Scaling them would make prose ragged, so only the private-use areas are icons.
+// TestNonIconRunesAreNotScaled: the standard Unicode symbols the family also carries are read
+// as text, so only the private-use areas count as icons.
 func TestNonIconRunesAreNotScaled(t *testing.T) {
 	o := testOptions(t)
 	o.Finder = &fakeFinder{faces: []Source{source(t, testGeneralFace)}}
