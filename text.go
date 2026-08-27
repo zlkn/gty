@@ -21,14 +21,18 @@ var textShader string
 // binary; anything else a session needs is on the machine already.
 //
 // assets/ holds the whole family, and the NL ("no ligatures") variants must not be used.
+//
+// The slots are one step off the weights that name them: Light is the body text and
+// SemiBold is what SGR bold gets. The family's own Regular is heavy for a screenful of
+// it, and against Light it barely reads as bold at all.
 var (
 	//go:embed assets/JetBrainsMonoNerdFontMono-Light.ttf
 	regularTTF []byte
-	//go:embed assets/JetBrainsMonoNerdFontMono-Regular.ttf
+	//go:embed assets/JetBrainsMonoNerdFontMono-SemiBold.ttf
 	boldTTF []byte
 	//go:embed assets/JetBrainsMonoNerdFontMono-LightItalic.ttf
 	italicTTF []byte
-	//go:embed assets/JetBrainsMonoNerdFontMono-Italic.ttf
+	//go:embed assets/JetBrainsMonoNerdFontMono-SemiBoldItalic.ttf
 	boldItalicTTF []byte
 )
 
