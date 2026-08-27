@@ -3,22 +3,28 @@ package main
 import (
 	"errors"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/go-gl/glfw/v3.4/glfw"
 )
 
-// keepTheme restores the theme after a test has loaded a config over it. The colours and
-// the font settings are package state, and every other test in here reads them — the font
-// ones included, because the coverage exponent is derived from both.
-func keepTheme(t *testing.T) {
+// keepConfig restores everything a config load writes to after a test has loaded one
+// over it. The colours, the font settings and the key bindings are all package state, and
+// every other test in here reads them — the font ones included, because the coverage
+// exponent is derived from both.
+func keepConfig(t *testing.T) {
 	t.Helper()
 	bg, fg, sel, named := backgroundRGBA, foreground, selectionColor, base16
 	family, size, gamma, icons := fontFamily, fontSize, fontGamma, fontIconScale
+	binds, bound := maps.Clone(keybinds), maps.Clone(boundKeys)
 	t.Cleanup(func() {
 		backgroundRGBA, foreground, selectionColor, base16 = bg, fg, sel, named
 		fontFamily, fontSize, fontGamma, fontIconScale = family, size, gamma, icons
+		keybinds, boundKeys = binds, bound
 		refreshTheme()
 	})
 }
@@ -33,7 +39,7 @@ func writeConfig(t *testing.T, body string) string {
 }
 
 func TestLoadConfigColors(t *testing.T) {
-	keepTheme(t)
+	keepConfig(t)
 
 	if err := loadConfig(filepath.Join("testdata", "config.toml")); err != nil {
 		t.Fatal(err)
@@ -81,7 +87,7 @@ func TestLoadConfigColors(t *testing.T) {
 }
 
 func TestLoadConfigKeepsDefaultsForAbsentKeys(t *testing.T) {
-	keepTheme(t)
+	keepConfig(t)
 	fg, sel, named := foreground, selectionColor, base16
 
 	path := writeConfig(t, "[colors]\nbackground = \"#ffffff\"\n")
@@ -129,7 +135,7 @@ func TestColorParsing(t *testing.T) {
 // TestLoadConfigFont covers the [font] section, whose keys are not colours but reach the
 // renderer the same way — and whose gamma re-derives a colour-adjacent value.
 func TestLoadConfigFont(t *testing.T) {
-	keepTheme(t)
+	keepConfig(t)
 
 	if err := loadConfig(writeConfig(t,
 		"[font]\nfamily = \"Iosevka\"\nsize = 13.5\ngamma = 2\nicon_scale = 0.6\n")); err != nil {
@@ -153,6 +159,63 @@ func TestLoadConfigFont(t *testing.T) {
 	}
 }
 
+// TestLoadConfigKeys covers the [keys] section: a rebind moves one action and leaves the
+// other eight where they were, and an empty string takes a key back out of the window
+// manager's hands.
+func TestLoadConfigKeys(t *testing.T) {
+	keepConfig(t)
+	before := maps.Clone(keybinds)
+
+	if err := loadConfig(writeConfig(t,
+		"[keys]\nsplit_vertical = \"ALT+D\"\nfocus_next = \"\"\n")); err != nil {
+		t.Fatal(err)
+	}
+
+	want := chord{glfw.KeyD, glfw.ModAlt}
+	if got := keybinds[actionSplitVertical]; got != want {
+		t.Errorf("split_vertical is %v, want %v", got, want)
+	}
+	if act, ok := boundKeys[want]; !ok || act != actionSplitVertical {
+		t.Errorf("alt+d maps to %v (found %v), want split_vertical", act, ok)
+	}
+	// The chord it used to have is nobody's now, so it reaches the shell.
+	if act, ok := boundKeys[before[actionSplitVertical]]; ok {
+		t.Errorf("the old ctrl+shift+d still runs %s", actionLabel(act))
+	}
+	if _, ok := keybinds[actionFocusNext]; ok {
+		t.Error(`focus_next = "" left the action bound`)
+	}
+	if act, ok := boundKeys[before[actionFocusNext]]; ok {
+		t.Errorf("the unbound ctrl+tab still runs %s", actionLabel(act))
+	}
+
+	for act, c := range before {
+		if act == actionSplitVertical || act == actionFocusNext {
+			continue
+		}
+		if keybinds[act] != c {
+			t.Errorf("%s moved to %v, want the default %v", actionLabel(act), keybinds[act], c)
+		}
+	}
+}
+
+// Swapping two bindings passes through a state where each clashes with the default it is
+// replacing. Only the merged table is checked, so it loads.
+func TestLoadConfigKeysSwap(t *testing.T) {
+	keepConfig(t)
+
+	if err := loadConfig(writeConfig(t,
+		"[keys]\nquit = \"ctrl+shift+w\"\nclose_pane = \"ctrl+shift+q\"\n")); err != nil {
+		t.Fatal(err)
+	}
+	if got := keybinds[actionQuit]; got.String() != "ctrl+shift+w" {
+		t.Errorf("quit is %v, want ctrl+shift+w", got)
+	}
+	if got := keybinds[actionClosePane]; got.String() != "ctrl+shift+q" {
+		t.Errorf("close_pane is %v, want ctrl+shift+q", got)
+	}
+}
+
 func TestLoadConfigErrors(t *testing.T) {
 	tests := []struct {
 		name, body, want string
@@ -169,10 +232,17 @@ func TestLoadConfigErrors(t *testing.T) {
 		// "leave icons at the size the face draws them".
 		{"icon scale negative", "[font]\nicon_scale = -0.5\n", "font.icon_scale"},
 		{"icon scale past one", "[font]\nicon_scale = 1.5\n", "font.icon_scale"},
+		{"unknown action", "[keys]\nquti = \"ctrl+q\"\n", "keys.quti is not an action"},
+		{"unknown key", "[keys]\nquit = \"ctrl+shift+minus\"\n", `has no key "minus"`},
+		{"unknown modifier", "[keys]\nquit = \"meta+q\"\n", `has no modifier "meta"`},
+		{"no key after the plus", "[keys]\nquit = \"ctrl+\"\n", "ends on a"},
+		{"conflict with a default", "[keys]\nquit = \"ctrl+shift+d\"\n", "keys.quit and keys.split_vertical are both ctrl+shift+d"},
+		{"conflict between two entries", "[keys]\nquit = \"alt+1\"\nclose_pane = \"alt+1\"\n", "are both alt+1"},
+		{"binding is not a string", "[keys]\nquit = 7\n", "quit"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			keepTheme(t)
+			keepConfig(t)
 			err := loadConfig(writeConfig(t, tc.body))
 			if err == nil {
 				t.Fatalf("%q loaded without an error", tc.body)
@@ -184,10 +254,24 @@ func TestLoadConfigErrors(t *testing.T) {
 	}
 }
 
+// The example file is the documentation, so it has to be a file that loads — including
+// every default it spells out for [keys], which is where a rename would show up first.
+func TestExampleConfigLoads(t *testing.T) {
+	keepConfig(t)
+	before := maps.Clone(keybinds)
+
+	if err := loadConfig("config.example.toml"); err != nil {
+		t.Fatal(err)
+	}
+	if !maps.Equal(keybinds, before) {
+		t.Errorf("the example bindings are %v, want the defaults %v", keybinds, before)
+	}
+}
+
 // A config that is not there is fs.ErrNotExist and nothing else: main decides whether
 // that matters, and it only does for an explicit -config.
 func TestLoadConfigMissingFile(t *testing.T) {
-	keepTheme(t)
+	keepConfig(t)
 	bg := backgroundRGBA
 
 	err := loadConfig(filepath.Join(t.TempDir(), "absent.toml"))
@@ -201,7 +285,7 @@ func TestLoadConfigMissingFile(t *testing.T) {
 
 // An unknown key is a typo, not a failure: the file still loads.
 func TestLoadConfigUnknownKey(t *testing.T) {
-	keepTheme(t)
+	keepConfig(t)
 
 	path := writeConfig(t, "[colors]\nforground = \"#ffffff\"\nbackground = \"#000000\"\n")
 	if err := loadConfig(path); err != nil {

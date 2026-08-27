@@ -34,3 +34,30 @@ bright = [
   "#57606a", "#b81a6b", "#1e763c", "#8d5b00",
   "#015493", "#75228e", "#007474", "#085157",
 ]
+
+# The window manager's hotkeys, by what they do. Every action keeps the default shown
+# here until this section names it, and an empty string unbinds one — an unbound chord
+# goes to the shell like any other key.
+#
+# A chord is modifiers then one key, joined by "+": ctrl, alt, shift, super, and a key
+# named a-z, 0-9, f1-f25, or one of backspace delete down end enter escape home insert
+# left pagedown pageup right space tab up. Keys are physical, so a binding still works
+# with a non-Latin layout active.
+#
+# Matching is exact — ctrl+shift+pageup is not shift+pageup, and is free to mean
+# something else. A bound chord never reaches the shell, so binding a bare letter costs
+# you that letter.
+[keys]
+quit             = "ctrl+shift+q"
+split_vertical   = "ctrl+shift+d"
+split_horizontal = "ctrl+shift+e"
+close_pane       = "ctrl+shift+w"
+
+# Ctrl+Q is XON and the bare arrows are the shell's, which is why the reserved corner is
+# Ctrl+Shift. Shift+PageUp is the exception: scrolling the pane's own history is what
+# xterm does with it too.
+focus_next       = "ctrl+tab"
+scroll_page_up   = "shift+pageup"
+scroll_page_down = "shift+pagedown"
+scroll_line_up   = "ctrl+shift+up"
+scroll_line_down = "ctrl+shift+down"

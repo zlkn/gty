@@ -3,14 +3,14 @@
 // glyph atlas. The loop is event-driven rather than a game loop, so an idle terminal
 // costs no CPU.
 //
-// The window manager keeps Ctrl+Shift only, because everything else belongs to the
-// shell: Ctrl+Shift+D and Ctrl+Shift+E split the focused pane, Ctrl+Shift+W closes it,
-// Ctrl+Shift+Q quits, Ctrl+Tab cycles the focus. The wheel scrolls the pane under the
-// mouse; Shift+PageUp/PageDown and Ctrl+Shift+Up/Down scroll the focused one. Every
-// other key goes to the shell.
+// By default the window manager keeps Ctrl+Shift only, because everything else belongs
+// to the shell: Ctrl+Shift+D and Ctrl+Shift+E split the focused pane, Ctrl+Shift+W closes
+// it, Ctrl+Shift+Q quits, Ctrl+Tab cycles the focus. The wheel scrolls the pane under the
+// mouse; Shift+PageUp/PageDown and Ctrl+Shift+Up/Down scroll the focused one. Every other
+// key goes to the shell. All of it is rebindable; see keybinds.
 //
-// Colours come from $XDG_CONFIG_HOME/gty/config.toml, or from the -config file; see
-// config.example.toml.
+// Colours and bindings come from $XDG_CONFIG_HOME/gty/config.toml, or from the -config
+// file; see config.example.toml.
 package main
 
 import (
@@ -147,6 +147,9 @@ type app struct {
 	blinkEpoch    time.Time
 	blinkShown    bool
 
+	// keyClaimed is set by the key callback and read by the character one; see typed.
+	keyClaimed bool
+
 	// Atomic because the PTY reader will eventually set them from its own goroutine;
 	// see Damage. needsLayout is separate from dirty because the quads carry the text
 	// and the cursor: re-encoding a frame without relaying it out presents the
@@ -280,11 +283,11 @@ func newApp() (*app, error) {
 	window.SetFramebufferSizeCallback(func(_ *glfw.Window, width, height int) {
 		a.resize(width, height)
 	})
-	window.SetKeyCallback(func(w *glfw.Window, key glfw.Key, _ int, action glfw.Action, mods glfw.ModifierKey) {
-		if action != glfw.Press && action != glfw.Repeat {
+	window.SetKeyCallback(func(_ *glfw.Window, key glfw.Key, _ int, act glfw.Action, mods glfw.ModifierKey) {
+		if act != glfw.Press && act != glfw.Repeat {
 			return
 		}
-		a.onKey(w, key, mods)
+		a.onKey(key, mods)
 	})
 	window.SetScrollCallback(func(w *glfw.Window, _, yoff float64) {
 		a.scrollAt(w, yoff)
@@ -395,47 +398,40 @@ func (a *app) Damage() {
 	glfw.PostEmptyEvent()
 }
 
-// onKey claims the window-management keys and sends everything else to the focused
-// pane's shell.
-//
-// Only Ctrl+Shift is reserved. Escape, the bare arrows and Ctrl+Q all mean something
-// to a terminal — Ctrl+Q is XON — so the window cannot have them. Shift+PageUp is the
-// exception: scrolling the pane's own history is what xterm does with it too.
-func (a *app) onKey(w *glfw.Window, key glfw.Key, mods glfw.ModifierKey) {
-	ctrl := mods&glfw.ModControl != 0
-	shift := mods&glfw.ModShift != 0
-
+// onKey runs the action a key is bound to, and sends everything it is not to the focused
+// pane's shell. The table is keybinds; what the defaults reserve, and why so little, is
+// documented there.
+func (a *app) onKey(key glfw.Key, mods glfw.ModifierKey) {
 	// Typing restarts the phase, so the cursor stays solid under the hands.
 	a.blinkEpoch = time.Now()
 
-	switch {
-	case key == glfw.KeyQ && ctrl && shift:
-		w.SetShouldClose(true)
-	case key == glfw.KeyD && ctrl && shift:
-		a.splitFocused(vertical)
-	case key == glfw.KeyE && ctrl && shift:
-		a.splitFocused(horizontal)
-	case key == glfw.KeyW && ctrl && shift:
-		a.closePane(a.focused)
-	case key == glfw.KeyTab && ctrl:
-		a.focusNext()
-	case key == glfw.KeyPageUp && shift:
-		a.scrollFocused(a.page())
-	case key == glfw.KeyPageDown && shift:
-		a.scrollFocused(-a.page())
-	case key == glfw.KeyUp && ctrl && shift:
-		a.scrollFocused(1)
-	case key == glfw.KeyDown && ctrl && shift:
-		a.scrollFocused(-1)
-	default:
-		a.toShell(keyBytes(key, mods))
+	act, ok := boundKeys[chord{key, mods & bindableMods}]
+
+	// glfw runs the character callback from this same event, and which modifiers stop it
+	// from running differs by platform — X11 and Wayland suppress on Ctrl or Alt, Win32
+	// on Alt, Cocoa on Super. So the character cannot be relied on to stay away: claim
+	// it here, or Ctrl+Shift+D would split the pane and type a "d" into it as well.
+	a.keyClaimed = ok
+	if ok {
+		a.dispatch(act)
+		return
 	}
+	a.toShell(keyBytes(key, mods))
 }
 
 // typed sends a character the window manager did not claim. Printable input arrives
 // here rather than through onKey because glfw has already applied the layout, the
 // shift state and any dead keys by this point.
-func (a *app) typed(r rune) { a.toShell([]byte(string(r))) }
+//
+// The flag is cleared on the way through as well as set by every key press, so a binding
+// that produces no character at all cannot leave it standing to eat the next one.
+func (a *app) typed(r rune) {
+	if a.keyClaimed {
+		a.keyClaimed = false
+		return
+	}
+	a.toShell([]byte(string(r)))
+}
 
 // toShell writes to the focused pane's shell and snaps its view back to the live
 // screen — a key that reaches the shell means the user wants to see what it does.

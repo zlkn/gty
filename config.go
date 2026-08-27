@@ -7,8 +7,10 @@ package main
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -24,6 +26,12 @@ const ansiColors = 8
 type config struct {
 	Colors colorConfig `toml:"colors"`
 	Font   fontConfig  `toml:"font"`
+
+	// Keys is action name to chord — "quit = \"ctrl+shift+q\"". A map rather than a
+	// field per action, because keys.go already lists the actions and a second copy in
+	// struct tags is how the two would drift. The cost is that toml cannot report a
+	// misspelt action as an undecoded key, so applyKeys rejects one outright.
+	Keys map[string]string `toml:"keys"`
 }
 
 // fontConfig picks the face the grid is drawn with. An absent family means the
@@ -114,8 +122,12 @@ func loadConfig(path string) error {
 	return nil
 }
 
-// apply moves the file's colours into the theme.
+// apply moves the file's settings into the globals they override.
 func (c config) apply() error {
+	if err := c.applyKeys(); err != nil {
+		return err
+	}
+
 	if f := c.Font.Family; f != nil {
 		fontFamily = strings.TrimSpace(*f)
 	}
@@ -169,5 +181,44 @@ func (c config) apply() error {
 	}
 
 	refreshTheme()
+	return nil
+}
+
+// applyKeys merges the file's [keys] over the default bindings. Absent actions keep
+// their default, an empty string unbinds one, and anything the window manager does not
+// claim goes on reaching the shell.
+func (c config) applyKeys() error {
+	binds := maps.Clone(keybinds)
+
+	// Sorted, so a file with two mistakes in it reports the same one every run.
+	for _, name := range slices.Sorted(maps.Keys(c.Keys)) {
+		act, ok := actionNames[name]
+		if !ok {
+			return fmt.Errorf("keys.%s is not an action; want one of %s", name, actionList())
+		}
+		spec := strings.TrimSpace(c.Keys[name])
+		if spec == "" {
+			delete(binds, act)
+			continue
+		}
+		ch, err := parseChord(spec)
+		if err != nil {
+			return fmt.Errorf("keys.%s: %w", name, err)
+		}
+		binds[act] = ch
+	}
+
+	// Conflicts are looked for once the whole section has been merged, not entry by
+	// entry: a file that swaps two bindings passes through a state where each clashes
+	// with the default it is replacing, and that is not a mistake.
+	bound := make(map[chord]action, len(binds))
+	for _, act := range slices.Sorted(maps.Keys(binds)) {
+		if other, dup := bound[binds[act]]; dup {
+			return fmt.Errorf("keys.%s and keys.%s are both %s", actionLabel(other), actionLabel(act), binds[act])
+		}
+		bound[binds[act]] = act
+	}
+
+	keybinds, boundKeys = binds, bound
 	return nil
 }
