@@ -2,12 +2,19 @@
 
 package main
 
+// The integration tests: a real shell on a real pty, its bytes crossing from the reader
+// goroutine to the main thread, through the parser and onto the grid. Three layers at
+// once, which is the point — and also why a failure here does not say which of them
+// broke. The Session's own contract is tested apart, in internal/pty.
+
 import (
 	"image"
 	"os/exec"
 	"strings"
 	"testing"
 	"time"
+
+	"gty/internal/pty"
 )
 
 // pumpUntil runs the real loop — read on one goroutine, parse and answer on this one —
@@ -16,7 +23,7 @@ func pumpUntil(t *testing.T, p *pane, cmd *exec.Cmd, want string) {
 	t.Helper()
 
 	woken := make(chan struct{}, 64)
-	s, err := startCommand(cmd, p.cols, p.rows, func() {
+	s, err := pty.StartCommand(cmd, p.cols, p.rows, func() {
 		select {
 		case woken <- struct{}{}:
 		default:
@@ -25,7 +32,7 @@ func pumpUntil(t *testing.T, p *pane, cmd *exec.Cmd, want string) {
 	if err != nil {
 		t.Skipf("no pty available: %v", err)
 	}
-	t.Cleanup(s.close)
+	t.Cleanup(s.Close)
 	p.pty = s
 
 	var buf []byte
@@ -37,8 +44,8 @@ func pumpUntil(t *testing.T, p *pane, cmd *exec.Cmd, want string) {
 			t.Fatalf("timed out waiting for %q; screen is %q", want, screenText(p.scr))
 		}
 
-		buf, err = s.take(buf)
-		s.write(p.feed(buf))
+		buf, err = s.Take(buf)
+		s.Write(p.feed(buf))
 		if strings.Contains(strings.Join(screenText(p.scr), "\n"), want) {
 			return
 		}
@@ -48,26 +55,28 @@ func pumpUntil(t *testing.T, p *pane, cmd *exec.Cmd, want string) {
 	}
 }
 
-// TestPTYFeedsThePane is the milestone end to end: a real shell on a real pty, its
-// bytes crossing from the reader goroutine to the main thread, through the parser and
-// onto the grid.
-func TestPTYFeedsThePane(t *testing.T) {
+// TestIntegrationPTYFeedsThePane is the milestone end to end: a real shell on a real
+// pty, its bytes crossing from the reader goroutine to the main thread, through the
+// parser and onto the grid.
+func TestIntegrationPTYFeedsThePane(t *testing.T) {
 	p := gridPane(1, image.Rect(0, 0, 800, 600), 80, 24)
 	pumpUntil(t, p, exec.Command("/bin/sh", "-c", "echo hi"), "hi")
 }
 
-// TestPTYReportsTheGrid: without TIOCSWINSZ the shell keeps believing it has 80x24 and
-// wraps the line being typed in the wrong place.
-func TestPTYReportsTheGrid(t *testing.T) {
+// TestIntegrationPTYReportsTheGrid: without TIOCSWINSZ the shell keeps believing it has
+// 80x24 and wraps the line being typed in the wrong place. Only the size the pty was
+// started at; that it can be changed afterwards is TestResizeReachesTheChild's business.
+func TestIntegrationPTYReportsTheGrid(t *testing.T) {
 	const cols, rows = 97, 31
 	p := gridPane(1, image.Rect(0, 0, 1200, 800), cols, rows)
 	pumpUntil(t, p, exec.Command("/bin/sh", "-c", "stty size"), "31 97")
 }
 
-// TestPTYAnswersAProbingShell is the regression for a terminal that looked dead: fish
-// asks what the terminal can do and draws nothing until it is told. Dropping every
-// sequence, which is otherwise the right thing this early, leaves it waiting forever.
-func TestPTYAnswersAProbingShell(t *testing.T) {
+// TestIntegrationPTYAnswersAProbingShell is the regression for a terminal that looked
+// dead: fish asks what the terminal can do and draws nothing until it is told. Dropping
+// every sequence, which is otherwise the right thing this early, leaves it waiting
+// forever.
+func TestIntegrationPTYAnswersAProbingShell(t *testing.T) {
 	fish, err := exec.LookPath("fish")
 	if err != nil {
 		t.Skipf("fish is not installed: %v", err)

@@ -1,7 +1,7 @@
 [font]
 family = "JetBrains Mono"
-size = 17
-icon_scale = 0.75
+size = 15
+icon_scale = 0.6
 # false takes the frames and blocks (U+2500-259F) from the font instead of drawing them
 box_drawing = true
 

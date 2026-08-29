@@ -19,6 +19,7 @@ import (
 	"github.com/oliverbestmann/webgpu/wgpuglfw"
 
 	"gty/internal/font"
+	"gty/internal/pty"
 )
 
 // Set from the config file, which is read before the window is built. Defaults here.
@@ -206,7 +207,7 @@ func (a *app) ensureShell(p *pane) {
 	if p.pty != nil || p.noShell || p.cols == 0 || p.rows == 0 {
 		return
 	}
-	s, err := startPTY(p.cols, p.rows, a.Damage)
+	s, err := pty.Start(p.cols, p.rows, a.Damage)
 	if err != nil {
 		// A pane with no shell still lays out and draws; better than refusing to open.
 		fmt.Fprintln(os.Stderr, "gty:", err)
@@ -412,9 +413,9 @@ func (a *app) pumpPTY() {
 			continue
 		}
 		var err error
-		a.ptyBuf, err = p.pty.take(a.ptyBuf)
+		a.ptyBuf, err = p.pty.Take(a.ptyBuf)
 		if len(a.ptyBuf) > 0 {
-			p.pty.write(p.feed(a.ptyBuf)) // answers to any queries in this chunk
+			p.pty.Write(p.feed(a.ptyBuf)) // answers to any queries in this chunk
 			a.needsLayout.Store(true)
 			a.dirty.Store(true)
 		}
@@ -477,7 +478,7 @@ func (a *app) toShell(b []byte) {
 	if len(b) == 0 || a.focused.pty == nil {
 		return
 	}
-	a.focused.pty.write(b)
+	a.focused.pty.Write(b)
 	if a.focused.scroll != 0 {
 		a.focused.scroll = 0
 		a.Damage()

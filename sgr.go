@@ -1,18 +1,21 @@
 package main
 
-import "gty/internal/font"
+import (
+	"gty/internal/font"
+	"gty/internal/vt"
+)
 
 // sgr applies a Select Graphic Rendition sequence to the pen — the attributes every
 // cell written after it will carry.
-func (p *pane) sgr(c csi) {
+func (p *pane) sgr(c vt.CSI) {
 	pen := &p.scr.pen
-	if len(c.params) == 0 {
+	if len(c.Params) == 0 {
 		*pen = cell{} // a bare CSI m is a reset
 		return
 	}
 
-	for i := 0; i < len(c.params); i++ {
-		switch v := c.params[i]; {
+	for i := 0; i < len(c.Params); i++ {
+		switch v := c.Params[i]; {
 		case v == 0:
 			*pen = cell{}
 		case v == 1:
@@ -60,22 +63,22 @@ func (p *pane) sgr(c csi) {
 // Two forms are in the wild. Semicolons — 38;5;n and 38;2;r;g;b — and colons, where the
 // truecolour form carries an extra colour-space slot everyone leaves empty:
 // 38:2::r:g:b. Only the separator tells them apart, which is why the parser keeps it.
-func extendedColor(c csi, i int) (color, int) {
-	if i+1 >= len(c.params) {
+func extendedColor(c vt.CSI, i int) (color, int) {
+	if i+1 >= len(c.Params) {
 		return colorDefault, i
 	}
-	switch c.params[i+1] {
+	switch c.Params[i+1] {
 	case 5: // palette index
-		if i+2 < len(c.params) {
-			return paletteColor(c.params[i+2]), i + 2
+		if i+2 < len(c.Params) {
+			return paletteColor(c.Params[i+2]), i + 2
 		}
 	case 2: // direct RGB
 		j := i + 2
-		if c.sub(i+1) && j+3 < len(c.params) {
+		if c.Sub(i+1) && j+3 < len(c.Params) {
 			j++ // step over the empty colour space
 		}
-		if j+2 < len(c.params) {
-			return rgbColor(c.params[j], c.params[j+1], c.params[j+2]), j + 2
+		if j+2 < len(c.Params) {
+			return rgbColor(c.Params[j], c.Params[j+1], c.Params[j+2]), j + 2
 		}
 	}
 	return colorDefault, i + 1

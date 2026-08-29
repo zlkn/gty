@@ -6,6 +6,9 @@ import (
 	"maps"
 	"slices"
 	"strings"
+
+	"gty/internal/pty"
+	"gty/internal/vt"
 )
 
 // dir is the axis a split divides: vertical puts its panes side by side.
@@ -58,8 +61,8 @@ type pane struct {
 	pri, alt   *screen         // the primary grid and the one a full-screen program gets
 	scr        *screen         // whichever of the two is live
 	buf        *scrollback     // the lines that have scrolled off the primary
-	par        parser
-	pty        *ptySession
+	par        vt.Parser
+	pty        *pty.Session
 	noShell    bool   // the shell failed to start; do not keep retrying
 	answers    []byte // replies owed to the shell; see feed
 	scroll     int    // lines back from the newest; 0 = pinned to the tail
@@ -118,18 +121,18 @@ func (p *pane) rowAt(i int) (*shapedRow, uint32) {
 func (p *pane) feed(b []byte) []byte {
 	before := p.buf.pushed
 	p.answers = p.answers[:0]
-	p.par.parse(b, p)
+	p.par.Parse(b, p)
 	if p.scroll > 0 {
 		p.scroll = min(p.scroll+int(p.buf.pushed-before), p.maxScroll())
 	}
 	return p.answers
 }
 
-// pane is the parser's sink.
+// pane is the parser's vt.Sink.
 
-func (p *pane) print(r rune) { p.scr.put(r) }
+func (p *pane) Print(r rune) { p.scr.put(r) }
 
-func (p *pane) execute(b byte) {
+func (p *pane) Execute(b byte) {
 	switch b {
 	case '\n', 0x0B, 0x0C: // LF, VT and FF all feed a line
 		p.scr.lineFeed()
@@ -152,29 +155,29 @@ func (p *pane) execute(b byte) {
 // answered. DA1 is the barrier the probe hangs on: a prober sends its queries and then
 // a DA1, so the DA1 reply is what tells it the rest are never coming. A terminal that
 // answers nothing simply looks dead.
-func (p *pane) csiDispatch(c csi) {
+func (p *pane) CSIDispatch(c vt.CSI) {
 	// Of the sequences carrying an intermediate, DECSCUSR (SP q) is the one gty acts on:
 	// it is how vim and neovim mark their modes. The rest are dropped on purpose; DA1 is
 	// the barrier a prober actually waits on.
-	if len(c.inter) > 0 {
-		if c.private == 0 && c.final == 'q' && len(c.inter) == 1 && c.inter[0] == ' ' {
-			p.setCursorStyle(c.raw(0))
+	if len(c.Inter) > 0 {
+		if c.Private == 0 && c.Final == 'q' && len(c.Inter) == 1 && c.Inter[0] == ' ' {
+			p.setCursorStyle(c.Raw(0))
 		}
 		return
 	}
 	s := p.scr
 
-	switch c.private {
+	switch c.Private {
 	case '?':
-		switch c.final {
+		switch c.Final {
 		case 'h':
-			p.setModes(c.params, true)
+			p.setModes(c.Params, true)
 		case 'l':
-			p.setModes(c.params, false)
+			p.setModes(c.Params, false)
 		}
 		return
 	case '>':
-		if c.final == 'c' {
+		if c.Final == 'c' {
 			// DA2: terminal type, firmware version, cartridge ROM. Nothing here has a
 			// meaningful version yet.
 			p.reply("\x1b[>0;0;0c")
@@ -185,47 +188,47 @@ func (p *pane) csiDispatch(c csi) {
 		return
 	}
 
-	switch c.final {
+	switch c.Final {
 	case '@':
-		s.insertChars(c.arg(0, 1))
+		s.insertChars(c.Arg(0, 1))
 	case 'A':
-		s.moveBy(-c.arg(0, 1), 0)
+		s.moveBy(-c.Arg(0, 1), 0)
 	case 'B', 'e':
-		s.moveBy(c.arg(0, 1), 0)
+		s.moveBy(c.Arg(0, 1), 0)
 	case 'C', 'a':
-		s.moveBy(0, c.arg(0, 1))
+		s.moveBy(0, c.Arg(0, 1))
 	case 'D':
-		s.moveBy(0, -c.arg(0, 1))
+		s.moveBy(0, -c.Arg(0, 1))
 	case 'E':
-		s.moveTo(s.curRow+c.arg(0, 1), 0)
+		s.moveTo(s.curRow+c.Arg(0, 1), 0)
 	case 'F':
-		s.moveTo(s.curRow-c.arg(0, 1), 0)
+		s.moveTo(s.curRow-c.Arg(0, 1), 0)
 	case 'G', '`':
-		s.moveTo(s.curRow, c.arg(0, 1)-1)
+		s.moveTo(s.curRow, c.Arg(0, 1)-1)
 	case 'H', 'f':
-		s.moveTo(c.arg(0, 1)-1, c.arg(1, 1)-1)
+		s.moveTo(c.Arg(0, 1)-1, c.Arg(1, 1)-1)
 	case 'J':
-		s.eraseInDisplay(c.raw(0))
+		s.eraseInDisplay(c.Raw(0))
 	case 'K':
-		s.eraseInLine(c.raw(0))
+		s.eraseInLine(c.Raw(0))
 	case 'L':
-		s.insertLines(c.arg(0, 1))
+		s.insertLines(c.Arg(0, 1))
 	case 'M':
-		s.deleteLines(c.arg(0, 1))
+		s.deleteLines(c.Arg(0, 1))
 	case 'P':
-		s.deleteChars(c.arg(0, 1))
+		s.deleteChars(c.Arg(0, 1))
 	case 'S':
-		for range c.arg(0, 1) {
+		for range c.Arg(0, 1) {
 			s.scrollUp()
 		}
 	case 'T':
-		for range c.arg(0, 1) {
+		for range c.Arg(0, 1) {
 			s.scrollDownAt(s.top)
 		}
 	case 'X':
-		s.eraseChars(c.arg(0, 1))
+		s.eraseChars(c.Arg(0, 1))
 	case 'd':
-		s.moveTo(c.arg(0, 1)-1, s.curCol)
+		s.moveTo(c.Arg(0, 1)-1, s.curCol)
 	case 'c':
 		// DA1. VT220 (62) speaking ANSI colour (22), which is what TERM already
 		// promises and what gty now actually does.
@@ -235,14 +238,14 @@ func (p *pane) csiDispatch(c csi) {
 	case 'n':
 		// DSR. fish asks where the cursor is on every redraw; a terminal that does not
 		// answer leaves it guessing.
-		switch c.raw(0) {
+		switch c.Raw(0) {
 		case 5:
 			p.reply("\x1b[0n")
 		case 6:
 			p.reply(fmt.Sprintf("\x1b[%d;%dR", s.curRow+1, s.curCol+1))
 		}
 	case 'r':
-		s.setRegion(c.raw(0), c.raw(1))
+		s.setRegion(c.Raw(0), c.Raw(1))
 	case 's':
 		s.save()
 	case 'u':
@@ -303,7 +306,7 @@ func (p *pane) useAlt(on, withCursor bool) {
 	p.scroll = 0
 }
 
-func (p *pane) escDispatch(final byte, inter []byte) {
+func (p *pane) ESCDispatch(final byte, inter []byte) {
 	if len(inter) > 0 {
 		return // charset designation and friends
 	}
@@ -326,7 +329,7 @@ func (p *pane) escDispatch(final byte, inter []byte) {
 	}
 }
 
-func (p *pane) oscDispatch(data []byte) {
+func (p *pane) OSCDispatch(data []byte) {
 	// The colour queries are worth answering because the answer is true: apps ask so
 	// they can pick a light or a dark theme.
 	switch string(data) {
@@ -505,14 +508,14 @@ func (p *pane) setGrid(cols, rows int) {
 	// Only on a real change: relayout runs on every damaged frame, and every Setsize
 	// is a SIGWINCH to the shell.
 	if changed && p.pty != nil {
-		p.pty.resize(cols, rows)
+		p.pty.Resize(cols, rows)
 	}
 }
 
 // release ends the pane's shell. Safe to call twice.
 func (p *pane) release() {
 	if p.pty != nil {
-		p.pty.close()
+		p.pty.Close()
 		p.pty = nil
 	}
 }
