@@ -217,8 +217,9 @@ func newFontManager(sizePt, scale float64, maxTexture int) (*font.FontManager, e
 		// The display's scale rides in on the DPI: ppem is Size*DPI/72, so the same
 		// point size rasterises at twice the pixels on a 2x panel.
 		Size: sizePt, DPI: 72 * scale, MaxTexture: maxTexture,
-		IconFill: fontIconScale,
-		Warn:     warn,
+		IconFill:   fontIconScale,
+		BoxDrawing: fontBoxDrawing,
+		Warn:       warn,
 	}
 
 	if fontFamily != "" && !strings.EqualFold(fontFamily, embeddedFamily) {
@@ -493,7 +494,9 @@ func (t *text) Layout(panes []*pane, focused *pane) {
 				k := t.fm.Resolve(cl.Style, gid, cl.Rune)
 				u, v := a.Ensure(k)
 				darken := float32(1)
-				if t.fm.IconFace(k.Style) {
+				if k.Style == font.SynthBox || t.fm.IconFace(k.Style) {
+					// A frame is whole pixels where the bend is a no-op, and on its arcs
+					// the bend would only fatten the antialiasing asked for.
 					darken = 0
 				}
 				c, _ := cl.colors()

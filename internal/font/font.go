@@ -46,8 +46,13 @@ const (
 	// prompt asking for ✔ (U+2714) needs a face from somewhere else entirely.
 	Fallback Style = NumStyles
 
-	// maxFaces: a Style is a byte. Reaching it means something is wrong.
-	maxFaces = 1 << 8
+	// maxFaces: a Style is a byte, and the last value is SynthBox's. Reaching it means
+	// something is wrong.
+	maxFaces = 1<<8 - 1
+
+	// SynthBox is the style of the glyphs drawn in boxdraw.go. No face behind it, and its
+	// GID is the rune, so one slot serves all four styles.
+	SynthBox Style = maxFaces
 )
 
 func (s Style) String() string {
@@ -60,6 +65,9 @@ func (s Style) String() string {
 		return "Italic"
 	case BoldItalic:
 		return "BoldItalic"
+	}
+	if s == SynthBox {
+		return "SynthBox"
 	}
 	if s >= Fallback {
 		return fmt.Sprintf("Fallback%d", s-Fallback)
@@ -153,6 +161,10 @@ type Options struct {
 	// on a Nerd Font's Mono variant — DefaultIconFill is what the app passes.
 	IconFill float64
 
+	// BoxDrawing draws the frames and blocks here instead of taking the face's; see
+	// boxdraw.go.
+	BoxDrawing bool
+
 	MaxTexture int // the device's largest 2D texture; it bounds the atlas
 
 	// Warn reports what was worked around rather than failed on. nil is silence.
@@ -193,6 +205,8 @@ type FontManager struct {
 	iconFill  float64
 	iconTwins map[Style]Style
 
+	boxDrawing bool // Options.BoxDrawing; Resolve is where it takes effect
+
 	// resolved is every rune the chain has been asked about, misses included: without
 	// those, a screen full of an uncovered rune would search the system on every frame.
 	resolved map[rune]Key
@@ -210,12 +224,13 @@ func NewManager(o Options) (*FontManager, error) {
 	ppem := fixed.Int26_6(0.5 + (o.Size * o.DPI * 64 / 72))
 	fm := &FontManager{
 		Family: o.Family, Size: o.Size, PPEM: ppem,
-		faces:     make([]*face, NumStyles),
-		finder:    o.Finder,
-		warn:      o.Warn,
-		resolved:  make(map[rune]Key),
-		iconFill:  o.IconFill,
-		iconTwins: make(map[Style]Style),
+		faces:      make([]*face, NumStyles),
+		finder:     o.Finder,
+		warn:       o.Warn,
+		resolved:   make(map[rune]Key),
+		iconFill:   o.IconFill,
+		iconTwins:  make(map[Style]Style),
+		boxDrawing: o.BoxDrawing,
 	}
 
 	for i := range NumStyles {
@@ -536,6 +551,11 @@ func (fm *FontManager) GlyphIndex(s Style, r rune) (GID, bool) {
 //
 // A rune nothing covers comes back as GID 0 — the box, so a hole reads as missing.
 func (fm *FontManager) Resolve(s Style, gid GID, r rune) Key {
+	// Before the face is consulted: whatever glyph the family carries for a frame is not
+	// wanted. The rune is the GID, which the range fits with room to spare.
+	if fm.boxDrawing && boxRune(r) {
+		return Key{Style: SynthBox, GID: GID(r)}
+	}
 	k := fm.resolveFace(s, gid, r)
 	if k.GID == 0 || !isIconRune(r) {
 		return k

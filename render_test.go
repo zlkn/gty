@@ -289,6 +289,27 @@ func TestCursorSplitLeavesTheCacheLigated(t *testing.T) {
 	}
 }
 
+// The bend a light theme applies to text has nothing to fix on a frame's straight runs
+// and would only fatten the antialiasing on its arcs.
+func TestBoxDrawingSkipsTheCoverageBend(t *testing.T) {
+	device, queue := newTestGPU(t)
+	txt := newTestText(t, device, queue)
+
+	p := gridPane(1, image.Rect(0, 0, 400, 100), 6, 1, "╭──╮ab")
+	txt.Layout([]*pane{p}, p)
+	if p.count != 6 {
+		t.Fatalf("laid out %d quads for six cells; the indices below would not line up", p.count)
+	}
+	for i := range 4 {
+		if got := txt.instances[i].darken; got != 0 {
+			t.Errorf("cell %d of the frame asks for the bend (darken=%v), want 0", i, got)
+		}
+	}
+	if got := txt.instances[4].darken; got != 1 {
+		t.Errorf("the text beside the frame is darken=%v, want the theme's bend", got)
+	}
+}
+
 // TestCursorInvertsTheCellGlyph checks the colour Layout gives the covered glyph,
 // which is the half of the inversion the rect renderer cannot do.
 func TestCursorInvertsTheCellGlyph(t *testing.T) {

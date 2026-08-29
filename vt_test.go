@@ -238,6 +238,36 @@ func TestCursorVisibilityMode(t *testing.T) {
 	}
 }
 
+// TestCursorStyle: neovim marks its modes with DECSCUSR alone, so a terminal that drops
+// the sequence shows a block cursor in insert mode.
+func TestCursorStyle(t *testing.T) {
+	p := vtPane(20, 3)
+	if p.cursor.shape != cursorShapeDefault {
+		t.Fatalf("a fresh pane is shape %d, want the default %d", p.cursor.shape, cursorShapeDefault)
+	}
+
+	for _, tc := range []struct {
+		in   string
+		want cursorShape
+	}{
+		{"\x1b[6 q", cursorBar}, // steady bar: neovim's insert mode
+		{"\x1b[5 q", cursorBar}, // blinking bar, same shape
+		{"\x1b[3 q", cursorUnderline},
+		{"\x1b[2 q", cursorBlock}, // and back to normal mode
+		{"\x1b[6 q", cursorBar},
+		{"\x1b[0 q", cursorShapeDefault},
+		{"\x1b[6 q", cursorBar},
+		{"\x1b[9 q", cursorBar},       // out of range: the shape stands
+		{"\x1b[>0q", cursorBar},       // a private q is not a cursor style
+		{"\x1bc", cursorShapeDefault}, // RIS
+	} {
+		p.feed([]byte(tc.in))
+		if p.cursor.shape != tc.want {
+			t.Errorf("%q left shape %d, want %d", tc.in, p.cursor.shape, tc.want)
+		}
+	}
+}
+
 func TestAutowrapMode(t *testing.T) {
 	p := vtPane(4, 2, "\x1b[?7l", "abcdef")
 	if got, want := screenText(p.scr), []string{"abcf", ""}; !slices.Equal(got, want) {

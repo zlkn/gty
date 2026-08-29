@@ -1,13 +1,20 @@
 [font]
 family = "JetBrains Mono"
-size = 16
+size = 17
 icon_scale = 0.75
+# false takes the frames and blocks (U+2500-259F) from the font instead of drawing them
+box_drawing = true
+
+[cursor]
+# block, bar or underline; a program can still change it with DECSCUSR
+shape = "block"
 
 [colors]
 background = "#ebebeb"
 # background = "#f2f2f2"
 foreground = "#424242"
 selection = "#d9d9d9"
+# cursor = "#424242"  # defaults to the foreground
 
 ansi = [
   "#d1d1d1", "#b81a6b", "#1e763c", "#8d5b00",

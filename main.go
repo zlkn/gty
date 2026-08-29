@@ -1,16 +1,3 @@
-// Command gty is a GPU terminal: a glfw window, a WebGPU surface and a tree of split
-// panes, each running a shell on its own pseudo-terminal and drawing from a shared
-// glyph atlas. The loop is event-driven rather than a game loop, so an idle terminal
-// costs no CPU.
-//
-// By default the window manager keeps Ctrl+Shift only, because everything else belongs
-// to the shell: Ctrl+Shift+D and Ctrl+Shift+E split the focused pane, Ctrl+Shift+W closes
-// it, Ctrl+Shift+Q quits, Ctrl+Tab cycles the focus. The wheel scrolls the pane under the
-// mouse; Shift+PageUp/PageDown and Ctrl+Shift+Up/Down scroll the focused one. Every other
-// key goes to the shell. All of it is rebindable; see keybinds.
-//
-// Colours and bindings come from $XDG_CONFIG_HOME/gty/config.toml, or from the -config
-// file; see config.example.toml.
 package main
 
 import (
@@ -39,7 +26,7 @@ var (
 	// fontFamily empty means the embedded JetBrains Mono; anything else is looked up
 	// among the installed fonts.
 	fontFamily = ""
-	fontSize   = 24.0
+	fontSize   = 16.0
 
 	// fontGamma bends the antialiasing coverage curve; zero derives it from the theme.
 	// See coverageExponent.
@@ -49,6 +36,10 @@ var (
 	// leaves icons at the size the face draws them. Read when the renderer is built,
 	// not in refreshTheme: it decides the atlas geometry, which is laid out once.
 	fontIconScale = font.DefaultIconFill
+
+	// fontBoxDrawing draws the frames and blocks ourselves. Read when the renderer is
+	// built, like fontIconScale.
+	fontBoxDrawing = true
 )
 
 const (
@@ -71,9 +62,6 @@ const (
 	cursorUnderlineHeight = 2
 	cursorOutlineWidth    = 1
 	underlineHeight       = 1
-
-	// cursorShapeDefault stands in for DECSCUSR until a PTY sends one.
-	cursorShapeDefault = cursorBlock
 
 	// cursorBlinkPeriod is one full on-off cycle. Blinking only runs while the window
 	// holds the focus, so an idle terminal still parks in WaitEvents and costs
@@ -119,6 +107,14 @@ var (
 	// selectionColor also paints the dividers between panes.
 	selectionColor = [4]float32{0.851, 0.851, 0.851, 1} // #d9d9d9
 
+	// cursorTint is colors.cursor, or nil to follow the foreground. A block draws its
+	// glyph in the background colour, so a tint near the background buys a visible cursor
+	// and an invisible glyph.
+	cursorTint *[4]float32
+
+	// cursorShapeDefault is what a pane starts with and what DECSCUSR 0 and RIS return to.
+	cursorShapeDefault = cursorBlock
+
 	// Derived; see refreshTheme.
 	cursorColor [4]float32
 
@@ -138,6 +134,9 @@ func refreshTheme() {
 	// A block draws its glyph in the background colour, so the cursor has to be
 	// something that reads against it.
 	cursorColor = foreground
+	if cursorTint != nil {
+		cursorColor = *cursorTint
+	}
 	coverageExp = coverageExponent(foreground, backgroundRGBA, fontGamma)
 	palette = buildPalette()
 }

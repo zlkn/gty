@@ -3,6 +3,9 @@ package main
 import (
 	"fmt"
 	"image"
+	"maps"
+	"slices"
+	"strings"
 )
 
 // dir is the axis a split divides: vertical puts its panes side by side.
@@ -13,8 +16,8 @@ const (
 	horizontal
 )
 
-// cursorShape is how the cursor marks its cell. DECSCUSR will pick between these
-// per pane; today every pane takes cursorShapeDefault.
+// cursorShape is how the cursor marks its cell. DECSCUSR picks between these per pane;
+// a pane that never gets one keeps cursorShapeDefault.
 type cursorShape uint8
 
 const (
@@ -22,6 +25,17 @@ const (
 	cursorBar
 	cursorUnderline
 )
+
+// cursorShapeNames is how the config file spells the shapes.
+var cursorShapeNames = map[string]cursorShape{
+	"block":     cursorBlock,
+	"bar":       cursorBar,
+	"underline": cursorUnderline,
+}
+
+func cursorShapeList() string {
+	return strings.Join(slices.Sorted(maps.Keys(cursorShapeNames)), " ")
+}
 
 // cursor is how the cursor is drawn. Where it is lives on the screen, which is the
 // thing the escape codes actually move.
@@ -139,10 +153,13 @@ func (p *pane) execute(b byte) {
 // a DA1, so the DA1 reply is what tells it the rest are never coming. A terminal that
 // answers nothing simply looks dead.
 func (p *pane) csiDispatch(c csi) {
-	// Intermediates mean a variant nothing here implements: cursor style (SP q),
-	// XTVERSION (> q) and the like. Left unanswered on purpose; DA1 is the barrier a
-	// prober actually waits on.
+	// Of the sequences carrying an intermediate, DECSCUSR (SP q) is the one gty acts on:
+	// it is how vim and neovim mark their modes. The rest are dropped on purpose; DA1 is
+	// the barrier a prober actually waits on.
 	if len(c.inter) > 0 {
+		if c.private == 0 && c.final == 'q' && len(c.inter) == 1 && c.inter[0] == ' ' {
+			p.setCursorStyle(c.raw(0))
+		}
 		return
 	}
 	s := p.scr
@@ -233,6 +250,22 @@ func (p *pane) csiDispatch(c csi) {
 	}
 }
 
+// setCursorStyle handles DECSCUSR. Only the shape is read — the odd parameters also ask
+// for a blink, but that belongs to the window and runs on one clock for every pane. Out
+// of range leaves the shape alone, as xterm does.
+func (p *pane) setCursorStyle(param int) {
+	switch param {
+	case 0:
+		p.cursor.shape = cursorShapeDefault
+	case 1, 2:
+		p.cursor.shape = cursorBlock
+	case 3, 4:
+		p.cursor.shape = cursorUnderline
+	case 5, 6:
+		p.cursor.shape = cursorBar
+	}
+}
+
 // setModes handles DECSET and DECRST. Anything not listed is recognised and ignored:
 // mouse reporting, modifyOtherKeys, the kitty keyboard protocol.
 func (p *pane) setModes(params []int, on bool) {
@@ -289,6 +322,7 @@ func (p *pane) escDispatch(final byte, inter []byte) {
 	case 'c': // RIS
 		p.useAlt(false, false)
 		p.pri.reset()
+		p.cursor.shape = cursorShapeDefault
 	}
 }
 

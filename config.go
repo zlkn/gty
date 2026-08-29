@@ -1,8 +1,8 @@
 package main
 
 // The config file is $XDG_CONFIG_HOME/gty/config.toml, or ~/.config/gty/config.toml.
-// Every key in it is optional: an absent one keeps the built-in default, so a two-line
-// file is a whole config. See config.example.toml.
+// Every key in it is optional: an absent one keeps the built-in default
+// See config.example.toml.
 
 import (
 	"errors"
@@ -17,20 +17,15 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
-// ansiColors is the length of each half of the named palette: eight normal colours,
-// then eight bright ones.
+// ansiColors is the length of each half of the named palette:
+// Eight normal colours, then eight bright ones.
 const ansiColors = 8
 
-// config mirrors the file. Pointers and nil slices are what tells "absent" from
-// "present", which is what makes every key optional.
 type config struct {
-	Colors colorConfig `toml:"colors"`
-	Font   fontConfig  `toml:"font"`
+	Colors colorConfig  `toml:"colors"`
+	Cursor cursorConfig `toml:"cursor"`
+	Font   fontConfig   `toml:"font"`
 
-	// Keys is action name to chord — "quit = \"ctrl+shift+q\"". A map rather than a
-	// field per action, because keys.go already lists the actions and a second copy in
-	// struct tags is how the two would drift. The cost is that toml cannot report a
-	// misspelt action as an undecoded key, so applyKeys rejects one outright.
 	Keys map[string]string `toml:"keys"`
 }
 
@@ -42,14 +37,22 @@ type fontConfig struct {
 	Size      *float64 `toml:"size"`
 	Gamma     *float64 `toml:"gamma"`
 	IconScale *float64 `toml:"icon_scale"`
+
+	// BoxDrawing false takes the frames and blocks from the face; see internal/font/boxdraw.go.
+	BoxDrawing *bool `toml:"box_drawing"`
 }
 
 type colorConfig struct {
 	Background *rgba  `toml:"background"`
 	Foreground *rgba  `toml:"foreground"`
 	Selection  *rgba  `toml:"selection"`
+	Cursor     *rgba  `toml:"cursor"`
 	ANSI       []rgba `toml:"ansi"`
 	Bright     []rgba `toml:"bright"`
+}
+
+type cursorConfig struct {
+	Shape *string `toml:"shape"`
 }
 
 // rgba is "#rrggbb" or "#rrggbbaa" in the file and a renderer colour here.
@@ -155,6 +158,17 @@ func (c config) apply() error {
 		}
 		fontIconScale = *sc
 	}
+	if bd := c.Font.BoxDrawing; bd != nil {
+		fontBoxDrawing = *bd
+	}
+
+	if s := c.Cursor.Shape; s != nil {
+		shape, ok := cursorShapeNames[strings.ToLower(strings.TrimSpace(*s))]
+		if !ok {
+			return fmt.Errorf("cursor.shape is %q, want one of %s", *s, cursorShapeList())
+		}
+		cursorShapeDefault = shape
+	}
 
 	cl := c.Colors
 	if n := len(cl.ANSI); n != 0 && n != ansiColors {
@@ -172,6 +186,10 @@ func (c config) apply() error {
 	}
 	if cl.Selection != nil {
 		selectionColor = [4]float32(*cl.Selection)
+	}
+	if cl.Cursor != nil {
+		tint := [4]float32(*cl.Cursor)
+		cursorTint = &tint
 	}
 	for i, c := range cl.ANSI {
 		base16[i] = c.packed()

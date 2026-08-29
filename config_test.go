@@ -19,11 +19,15 @@ import (
 func keepConfig(t *testing.T) {
 	t.Helper()
 	bg, fg, sel, named := backgroundRGBA, foreground, selectionColor, base16
+	tint, shape := cursorTint, cursorShapeDefault
 	family, size, gamma, icons := fontFamily, fontSize, fontGamma, fontIconScale
+	boxes := fontBoxDrawing
 	binds, bound := maps.Clone(keybinds), maps.Clone(boundKeys)
 	t.Cleanup(func() {
 		backgroundRGBA, foreground, selectionColor, base16 = bg, fg, sel, named
+		cursorTint, cursorShapeDefault = tint, shape
 		fontFamily, fontSize, fontGamma, fontIconScale = family, size, gamma, icons
+		fontBoxDrawing = boxes
 		keybinds, boundKeys = binds, bound
 		refreshTheme()
 	})
@@ -132,13 +136,45 @@ func TestColorParsing(t *testing.T) {
 	}
 }
 
+// TestLoadConfigCursor: the shape a pane starts with, and a cursor colour of its own
+// where the theme otherwise takes the foreground.
+func TestLoadConfigCursor(t *testing.T) {
+	keepConfig(t)
+
+	if err := loadConfig(writeConfig(t,
+		"[cursor]\nshape = \" Bar \"\n\n[colors]\ncursor = \"#ff0000\"\n")); err != nil {
+		t.Fatal(err)
+	}
+	if cursorShapeDefault != cursorBar {
+		t.Errorf("shape is %d, want the bar %d", cursorShapeDefault, cursorBar)
+	}
+	if want := [4]float32{1, 0, 0, 1}; cursorColor != want {
+		t.Errorf("cursor colour is %v, want %v", cursorColor, want)
+	}
+	if cursorColor == foreground {
+		t.Error("the configured cursor colour still follows the foreground")
+	}
+
+	// A pane starts on it, and DECSCUSR 0 and RIS come back to it rather than to a block.
+	p := vtPane(20, 3)
+	if p.cursor.shape != cursorBar {
+		t.Errorf("a fresh pane is shape %d, want the configured %d", p.cursor.shape, cursorBar)
+	}
+	for _, in := range []string{"\x1b[2 q\x1b[0 q", "\x1b[2 q\x1bc"} {
+		p.feed([]byte(in))
+		if p.cursor.shape != cursorBar {
+			t.Errorf("%q left shape %d, want the configured %d", in, p.cursor.shape, cursorBar)
+		}
+	}
+}
+
 // TestLoadConfigFont covers the [font] section, whose keys are not colours but reach the
 // renderer the same way — and whose gamma re-derives a colour-adjacent value.
 func TestLoadConfigFont(t *testing.T) {
 	keepConfig(t)
 
 	if err := loadConfig(writeConfig(t,
-		"[font]\nfamily = \"Iosevka\"\nsize = 13.5\ngamma = 2\nicon_scale = 0.6\n")); err != nil {
+		"[font]\nfamily = \"Iosevka\"\nsize = 13.5\ngamma = 2\nicon_scale = 0.6\nbox_drawing = false\n")); err != nil {
 		t.Fatal(err)
 	}
 	if fontFamily != "Iosevka" {
@@ -156,6 +192,9 @@ func TestLoadConfigFont(t *testing.T) {
 	}
 	if fontIconScale != 0.6 {
 		t.Errorf("icon_scale is %v, want 0.6", fontIconScale)
+	}
+	if fontBoxDrawing {
+		t.Error("box_drawing = false left the frames drawn here")
 	}
 }
 
@@ -232,6 +271,9 @@ func TestLoadConfigErrors(t *testing.T) {
 		// "leave icons at the size the face draws them".
 		{"icon scale negative", "[font]\nicon_scale = -0.5\n", "font.icon_scale"},
 		{"icon scale past one", "[font]\nicon_scale = 1.5\n", "font.icon_scale"},
+		{"box_drawing is not a bool", "[font]\nbox_drawing = \"yes\"\n", "box_drawing"},
+		{"unknown cursor shape", "[cursor]\nshape = \"beam\"\n", `cursor.shape is "beam", want one of bar block underline`},
+		{"cursor shape is not a string", "[cursor]\nshape = 7\n", "shape"},
 		{"unknown action", "[keys]\nquti = \"ctrl+q\"\n", "keys.quti is not an action"},
 		{"unknown key", "[keys]\nquit = \"ctrl+shift+minus\"\n", `has no key "minus"`},
 		{"unknown modifier", "[keys]\nquit = \"meta+q\"\n", `has no modifier "meta"`},

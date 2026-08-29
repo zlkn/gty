@@ -64,6 +64,8 @@ type Atlas struct {
 	// glyph baked later lands on the same line as the ones baked at startup.
 	Ascent int
 
+	thin int // the light stem of a synthesized glyph; see boxdraw.go
+
 	keys []Key
 	slot map[Key]int
 
@@ -109,19 +111,24 @@ func (a *Atlas) Ensure(k Key) (u, v float32) {
 
 // bake rasterises one glyph into the next free slot, adding rows if there are none.
 func (a *Atlas) bake(k Key) (int, error) {
-	if int(k.Style) >= len(a.rast) {
+	if k.Style != SynthBox && int(k.Style) >= len(a.rast) {
 		return 0, fmt.Errorf("no %s face loaded", k.Style)
 	}
-	r := a.rast[k.Style]
 	if a.free >= a.Cols*a.Rows && !a.grow() {
 		return 0, fmt.Errorf("atlas full at %d slots", a.free)
 	}
 	i := a.free
 	slot := a.slotRect(i)
-	// The face's own baseline, not the grid's: a fitted face sits on a line of its own.
-	dot := fixed.P(slot.Min.X+a.PadLeft, slot.Min.Y+a.PadTop+r.ascent)
-	if err := r.draw(a.Img, k.GID, dot, a.fitBox(slot, r), slot); err != nil {
-		return 0, err
+	if k.Style == SynthBox {
+		// No face, so no baseline: the glyph is drawn to the cell box, and its GID is the rune.
+		drawBox(a.Img, a.cellBox(slot), rune(k.GID), a.thin)
+	} else {
+		r := a.rast[k.Style]
+		// The face's own baseline, not the grid's: a fitted face sits on a line of its own.
+		dot := fixed.P(slot.Min.X+a.PadLeft, slot.Min.Y+a.PadTop+r.ascent)
+		if err := r.draw(a.Img, k.GID, dot, a.fitBox(slot, r), slot); err != nil {
+			return 0, err
+		}
 	}
 
 	a.free++
@@ -192,6 +199,13 @@ func (a *Atlas) SlotRect(i int) image.Rectangle { return a.slotRect(i) }
 func (a *Atlas) slotRect(i int) image.Rectangle {
 	col, row := i%a.Cols, i/a.Cols
 	return image.Rect(col*a.SlotW, row*a.SlotH, (col+1)*a.SlotW, (row+1)*a.SlotH)
+}
+
+// cellBox is the cell inside slot, padding excluded. Ink outside it lands on a neighbour.
+func (a *Atlas) cellBox(slot image.Rectangle) image.Rectangle {
+	min := slot.Min.Add(image.Pt(a.PadLeft, a.PadTop))
+	return image.Rectangle{Min: min, Max: min.Add(image.Pt(
+		a.SlotW-a.PadLeft-a.PadRight, a.SlotH-a.PadTop-a.PadBottom))}
 }
 
 func (a *Atlas) slotUV(i int) (u, v float32) {
@@ -443,6 +457,7 @@ func BakeAtlas(fm *FontManager, maxTexture int) (*Atlas, error) {
 
 		PadLeft: padL, PadTop: padT, PadRight: padR, PadBottom: padB,
 		Ascent: fm.Ascent,
+		thin:   lightThickness(fm.PPEM),
 
 		slot: make(map[Key]int, len(eager)),
 		rast: rs,
@@ -490,11 +505,7 @@ func BakeAtlas(fm *FontManager, maxTexture int) (*Atlas, error) {
 // the face has no glyph for is drawn with this instead of with nothing, so a missing
 // character reads as missing rather than as a space.
 func (a *Atlas) drawNotdef() {
-	cellW := a.SlotW - a.PadLeft - a.PadRight
-	cellH := a.SlotH - a.PadTop - a.PadBottom
-	slot := a.slotRect(a.notdef)
-	box := image.Rect(0, 0, cellW, cellH).Inset(1).
-		Add(image.Pt(slot.Min.X+a.PadLeft, slot.Min.Y+a.PadTop))
+	box := a.cellBox(a.slotRect(a.notdef)).Inset(1)
 	if box.Dx() < 2 || box.Dy() < 2 {
 		return
 	}
