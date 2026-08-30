@@ -3,7 +3,8 @@ family = "JetBrains Mono"
 size = 15
 icon_scale = 0.6
 # false takes the frames and blocks (U+2500-259F) from the font instead of drawing them
-box_drawing = true
+box_drawing = false
+gamma = 1.50
 
 [cursor]
 # block, bar or underline; a program can still change it with DECSCUSR

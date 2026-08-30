@@ -17,13 +17,13 @@ import (
 var textShader string
 
 var (
-	//go:embed assets/JetBrainsMonoNerdFontMono-Light.ttf
-	regularTTF []byte
 	//go:embed assets/JetBrainsMonoNerdFontMono-Regular.ttf
+	regularTTF []byte
+	//go:embed assets/JetBrainsMonoNerdFontMono-Bold.ttf
 	boldTTF []byte
-	//go:embed assets/JetBrainsMonoNerdFontMono-LightItalic.ttf
-	italicTTF []byte
 	//go:embed assets/JetBrainsMonoNerdFontMono-Italic.ttf
+	italicTTF []byte
+	//go:embed assets/JetBrainsMonoNerdFontMono-BoldItalic.ttf
 	boldItalicTTF []byte
 )
 
