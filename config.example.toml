@@ -7,7 +7,7 @@ box_drawing = false
 # gamma bends the antialiasing curve; 0 derives it from the theme and from blend below.
 # Anything above 1 with blend = "gamma" reads heavy — that knob existed to undo what
 # linear blending does to a half-covered pixel.
-gamma = 1.0
+gamma = 1.1
 
 # where a glyph's edge is mixed with what is behind it. "linear" is physically right and
 # drags antialiased colour towards grey; "gamma" keeps it saturated, and is what other
@@ -18,7 +18,7 @@ blend = "gamma"
 # false hides the system titlebar and frame, leaving the tab bar as the top of the
 # window. Then only the quit binding closes it, and moving and resizing are whatever
 # the window manager offers without a frame.
-decorations = true
+decorations = false
 
 [cursor]
 # block, bar or underline; a program can still change it with DECSCUSR
