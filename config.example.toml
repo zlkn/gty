@@ -1,10 +1,17 @@
 [font]
 family = "JetBrains Mono"
-size = 15
+size = 16
 icon_scale = 0.6
 # false takes the frames and blocks (U+2500-259F) from the font instead of drawing them
 box_drawing = false
-gamma = 1.50
+# Make colors brighter but font bolder
+gamma = 2.0
+
+[window]
+# false hides the system titlebar and frame, leaving the tab bar as the top of the
+# window. Then only the quit binding closes it, and moving and resizing are whatever
+# the window manager offers without a frame.
+decorations = true
 
 [cursor]
 # block, bar or underline; a program can still change it with DECSCUSR
@@ -24,7 +31,7 @@ ansi = [
 
 bright = [
   "#57606a", "#b81a6b", "#1e763c", "#8d5b00",
-  "#015493", "#75228e", "#007474", "#085157",
+  "#015493", "#75228e", "#007474", "#1f1f1f",
 ]
 
 [keys]
@@ -32,8 +39,16 @@ quit             = "ctrl+shift+q"
 split_vertical   = "ctrl+shift+d"
 split_horizontal = "ctrl+shift+e"
 close_pane       = "ctrl+shift+w"
-focus_next       = "ctrl+tab"
+focus_next       = "alt+o"
 scroll_page_up   = "shift+pageup"
 scroll_page_down = "shift+pagedown"
 scroll_line_up   = "ctrl+shift+up"
 scroll_line_down = "ctrl+shift+down"
+
+new_tab   = "ctrl+shift+t"
+close_tab = "ctrl+shift+backspace"
+next_tab  = "ctrl+tab"
+prev_tab  = "ctrl+shift+tab"
+
+# goto_tab_1 through goto_tab_9 jump straight to a tab; the rest follow this one
+goto_tab_1 = "ctrl+shift+1"

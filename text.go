@@ -19,11 +19,11 @@ var textShader string
 var (
 	//go:embed assets/JetBrainsMonoNerdFontMono-Regular.ttf
 	regularTTF []byte
-	//go:embed assets/JetBrainsMonoNerdFontMono-Bold.ttf
+	//go:embed assets/JetBrainsMonoNerdFontMono-SemiBold.ttf
 	boldTTF []byte
 	//go:embed assets/JetBrainsMonoNerdFontMono-Italic.ttf
 	italicTTF []byte
-	//go:embed assets/JetBrainsMonoNerdFontMono-BoldItalic.ttf
+	//go:embed assets/JetBrainsMonoNerdFontMono-SemiBoldItalic.ttf
 	boldItalicTTF []byte
 )
 
@@ -41,6 +41,21 @@ type instance struct {
 	// the rasteriser made it. Per instance rather than per frame because icons and text
 	// share the pass; see font.FontManager.IconFace.
 	darken float32
+}
+
+// chrome is a run of text drawn outside any pane, scissored to rect so that a tab bar
+// label wider than its tab is clipped rather than spilling into the next one.
+type chrome struct {
+	rect  image.Rectangle
+	cells []cell
+	x, y  float32    // the top-left of the first cell, in framebuffer px
+	fg    [4]float32 // one colour for the run
+}
+
+// chromeGroup is a laid-out chrome run and its slice of the shared instance buffer.
+type chromeGroup struct {
+	rect         image.Rectangle
+	first, count uint32
 }
 
 type text struct {
@@ -62,10 +77,15 @@ type text struct {
 	maxTexture int  // the device's ceiling, kept for the rebake in SetScale
 	srgb       bool // whether the target encodes what the shader writes; see srgb.go
 
+	// The chrome runs this pass laid out, drawn ahead of the panes.
+	chrome []chromeGroup
+
 	// Scratch reused across frames: runes for the clipped row, gids for the cursor
-	// row, which is shaped outside the scrollback's cache.
-	runes   []rune
-	scratch []font.GID
+	// row, which is shaped outside the scrollback's cache, and gids for a chrome run,
+	// which has no row to cache into at all.
+	runes      []rune
+	scratch    []font.GID
+	chromeGids []font.GID
 }
 
 func newText(device *wgpu.Device, queue *wgpu.Queue, format wgpu.TextureFormat, sizePt, scale float64) (t *text, err error) {
@@ -441,13 +461,35 @@ func (t *text) shapeRuns(cells []cell, cols, bare int, dst []font.GID) []font.GI
 // ligature glyph that reaches over its neighbours lands where the font drew it.
 // Cell origins still step by CellWidth — calt in this font is monospace
 // preserving, one glyph per cell.
-func (t *text) Layout(panes []*pane, focused *pane) {
+func (t *text) Layout(panes []*pane, focused *pane, runs []chrome) {
 	t.instances = t.instances[:0]
 	a := t.fm.Atlas
 	slotW, slotH := float32(a.SlotW), float32(a.SlotH)
 	atlasW, atlasH := float32(a.Img.Rect.Dx()), float32(a.Img.Rect.Dy())
 	cellW, cellH := float32(t.fm.CellWidth), float32(t.fm.CellHeight)
 	pad := float32(px(padding))
+
+	// The pane loop below without a history to window, a cursor to prise out of a
+	// ligature or a focus to dim by.
+	t.chrome = t.chrome[:0]
+	for _, c := range runs {
+		first := uint32(len(t.instances))
+		t.chromeGids = t.shapeRow(c.cells, len(c.cells), t.chromeGids[:0])
+		for col, gid := range t.chromeGids {
+			cl := cellAt(c.cells, col)
+			k := t.fm.Resolve(cl.Style, gid, cl.Rune)
+			u, v := a.Ensure(k)
+			t.instances = append(t.instances, instance{
+				rect:   [4]float32{c.x + float32(col)*cellW - float32(a.PadLeft), c.y - float32(a.PadTop), slotW, slotH},
+				uv:     [4]float32{u, v, u + slotW/atlasW, v + slotH/atlasH},
+				color:  c.fg,
+				darken: glyphDarken(t.fm, k),
+			})
+		}
+		t.chrome = append(t.chrome, chromeGroup{
+			rect: c.rect, first: first, count: uint32(len(t.instances)) - first,
+		})
+	}
 
 	for _, p := range panes {
 		p.first, p.count = uint32(len(t.instances)), 0
@@ -483,12 +525,6 @@ func (t *text) Layout(panes []*pane, focused *pane) {
 				// chain is where it is drawn from.
 				k := t.fm.Resolve(cl.Style, gid, cl.Rune)
 				u, v := a.Ensure(k)
-				darken := float32(1)
-				if k.Style == font.SynthBox || t.fm.IconFace(k.Style) {
-					// A frame is whole pixels where the bend is a no-op, and on its arcs
-					// the bend would only fatten the antialiasing asked for.
-					darken = 0
-				}
 				c, _ := cl.colors()
 				if unfocused {
 					// Dim the ink and leave the paint: brightness is the focus cue, and
@@ -502,7 +538,7 @@ func (t *text) Layout(panes []*pane, focused *pane) {
 					rect:   [4]float32{originX + float32(col)*cellW - float32(a.PadLeft), y, slotW, slotH},
 					uv:     [4]float32{u, v, u + slotW/atlasW, v + slotH/atlasH},
 					color:  c,
-					darken: darken,
+					darken: glyphDarken(t.fm, k),
 				})
 			}
 		}
@@ -510,6 +546,15 @@ func (t *text) Layout(panes []*pane, focused *pane) {
 	}
 	t.uploadGlyphs()
 	t.upload()
+}
+
+// glyphDarken is whether the glyph wants the theme's coverage gamma. A frame and an
+// icon do not: the bend would only fatten antialiasing that was asked for.
+func glyphDarken(fm *font.FontManager, k font.Key) float32 {
+	if k.Style == font.SynthBox || fm.IconFace(k.Style) {
+		return 0
+	}
+	return 1
 }
 
 // uploadGlyphs copies whatever this pass had to rasterise into the atlas texture.
@@ -596,15 +641,21 @@ func (t *text) Draw(pass *wgpu.RenderPassEncoder, panes []*pane, viewportW, view
 	pass.SetVertexBuffer(0, t.vertexBuf, 0, wgpu.WholeSize)
 
 	surface := image.Rect(0, 0, int(viewportW), int(viewportH))
-	for _, p := range panes {
-		// A scissor past the attachment is a validation error, and a pane rect can
-		// outlive the frame it was laid out for.
-		r := p.rect.Intersect(surface)
-		if p.count == 0 || r.Empty() {
-			continue
+	// Intersected because a scissor past the attachment is a validation error, and a
+	// rect can outlive the frame it was laid out for.
+	group := func(rect image.Rectangle, first, count uint32) {
+		r := rect.Intersect(surface)
+		if count == 0 || r.Empty() {
+			return
 		}
 		pass.SetScissorRect(uint32(r.Min.X), uint32(r.Min.Y), uint32(r.Dx()), uint32(r.Dy()))
-		pass.Draw(4, p.count, 0, p.first)
+		pass.Draw(4, count, 0, first)
+	}
+	for _, c := range t.chrome {
+		group(c.rect, c.first, c.count)
+	}
+	for _, p := range panes {
+		group(p.rect, p.first, p.count)
 	}
 }
 
