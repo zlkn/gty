@@ -4,8 +4,15 @@ size = 17
 icon_scale = 0.6
 # false takes the frames and blocks (U+2500-259F) from the font instead of drawing them
 box_drawing = false
-# Make colors brighter but font bolder
-gamma = 1.25
+# gamma bends the antialiasing curve; 0 derives it from the theme and from blend below.
+# Anything above 1 with blend = "gamma" reads heavy — that knob existed to undo what
+# linear blending does to a half-covered pixel.
+gamma = 1.0
+
+# where a glyph's edge is mixed with what is behind it. "linear" is physically right and
+# drags antialiased colour towards grey; "gamma" keeps it saturated, and is what other
+# terminals do.
+blend = "gamma"
 
 [window]
 # false hides the system titlebar and frame, leaving the tab bar as the top of the

@@ -29,9 +29,13 @@ var (
 	fontFamily = ""
 	fontSize   = 16.0
 
-	// fontGamma bends the antialiasing coverage curve; zero derives it from the theme.
-	// See coverageExponent.
+	// fontGamma bends the antialiasing coverage curve; zero derives it from the theme
+	// and the blend space. See coverageExponent.
 	fontGamma = 0.0
+
+	// fontBlend is the blending asked for. What the surface actually gives is blendUsed,
+	// which is what the theme derives from — the driver need not offer either kind.
+	fontBlend = blendGamma
 
 	// fontIconScale is the share of the cell's height an icon is scaled to fill; zero
 	// leaves icons at the size the face draws them. Read when the renderer is built,
@@ -127,6 +131,11 @@ var (
 	// theme, because which way the curve has to bend depends on which of the ink and
 	// the paper is darker.
 	coverageExp float32
+
+	// blendUsed is the space the surface ended up blending in. Set once the format is
+	// known; until then the request stands in, which is right for every driver that
+	// offers both.
+	blendUsed = fontBlend
 )
 
 // refreshTheme recomputes everything that follows from the theme's own colours. The
@@ -142,7 +151,7 @@ func refreshTheme() {
 	if cursorTint != nil {
 		cursorColor = *cursorTint
 	}
-	coverageExp = coverageExponent(foreground, backgroundRGBA, fontGamma)
+	coverageExp = coverageExponent(foreground, backgroundRGBA, fontGamma, blendUsed)
 	palette = buildPalette()
 }
 
@@ -319,14 +328,16 @@ func newApp() (*app, error) {
 		a.release()
 		return nil, errors.New("the surface offers no texture format to draw in")
 	}
-	format := pickFormat(caps.Formats)
+	format := pickFormat(caps.Formats, fontBlend)
 	a.srgb = isSrgbFormat(format)
-	if !a.srgb {
-		// Worth saying out loud rather than looking washed out or flat: this is the
-		// branch where blending happens in gamma space, and the colours reach the
-		// screen without passing through a transfer function at all.
-		fmt.Fprintf(os.Stderr, "gty: surface format %v is not sRGB; blending in gamma space\n", format)
+
+	// The theme was derived from the requested space; only now is the real one known,
+	// and the coverage curve depends on it.
+	if blendUsed = spaceOf(format); blendUsed != fontBlend {
+		fmt.Fprintf(os.Stderr, "gty: no surface format blends in %v space; using %v, which blends in %v\n",
+			fontBlend, format, blendUsed)
 	}
+	refreshTheme()
 	a.config = &wgpu.SurfaceConfiguration{
 		Usage:       wgpu.TextureUsageRenderAttachment,
 		Format:      format,

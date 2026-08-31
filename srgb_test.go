@@ -75,34 +75,70 @@ func TestIsSrgbFormat(t *testing.T) {
 func TestPickFormat(t *testing.T) {
 	for _, tc := range []struct {
 		name string
+		want blendSpace
 		in   []wgpu.TextureFormat
-		want wgpu.TextureFormat
+		out  wgpu.TextureFormat
 	}{
 		{
-			"sRGB first, as Mesa reports it",
+			"gamma takes the UNORM past the sRGB Mesa leads with",
+			blendGamma,
 			[]wgpu.TextureFormat{wgpu.TextureFormatBGRA8UnormSrgb, wgpu.TextureFormatBGRA8Unorm},
-			wgpu.TextureFormatBGRA8UnormSrgb,
+			wgpu.TextureFormatBGRA8Unorm,
 		},
 		{
-			"sRGB further down the list",
+			"linear takes the sRGB further down the list",
+			blendLinear,
 			[]wgpu.TextureFormat{wgpu.TextureFormatBGRA8Unorm, wgpu.TextureFormatBGRA8UnormSrgb},
 			wgpu.TextureFormatBGRA8UnormSrgb,
 		},
 		{
-			"two sRGB variants: the driver's order decides",
+			"two that both fit: the driver's order decides",
+			blendLinear,
 			[]wgpu.TextureFormat{wgpu.TextureFormatRGBA8UnormSrgb, wgpu.TextureFormatBGRA8UnormSrgb},
 			wgpu.TextureFormatRGBA8UnormSrgb,
 		},
 		{
-			"no sRGB on offer",
+			"gamma with no plain UNORM on offer falls back to the sRGB",
+			blendGamma,
+			[]wgpu.TextureFormat{wgpu.TextureFormatBGRA8UnormSrgb},
+			wgpu.TextureFormatBGRA8UnormSrgb,
+		},
+		{
+			"linear with no sRGB on offer falls back to the UNORM",
+			blendLinear,
 			[]wgpu.TextureFormat{wgpu.TextureFormatBGRA8Unorm, wgpu.TextureFormatRGBA8Unorm},
 			wgpu.TextureFormatBGRA8Unorm,
 		},
-		{"nothing on offer", nil, wgpu.TextureFormatUndefined},
+		{"nothing on offer", blendGamma, nil, wgpu.TextureFormatUndefined},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := pickFormat(tc.in); got != tc.want {
-				t.Errorf("pickFormat(%v) = %v, want %v", tc.in, got, tc.want)
+			if got := pickFormat(tc.in, tc.want); got != tc.out {
+				t.Errorf("pickFormat(%v, %v) = %v, want %v", tc.in, tc.want, got, tc.out)
+			}
+		})
+	}
+}
+
+// TestPickFormatSkipsFormatsTheDeviceCannotUse: a surface offers more than the two kinds
+// this renderer draws into, and the extras need device features that are not enabled —
+// choosing one fails pipeline creation with a validation error rather than looking wrong.
+func TestPickFormatSkipsFormatsTheDeviceCannotUse(t *testing.T) {
+	exotic := []wgpu.TextureFormat{
+		wgpu.TextureFormatRGBA16Unorm, // wants TEXTURE_FORMAT_16BIT_NORM
+		wgpu.TextureFormatRGBA16Float,
+		wgpu.TextureFormatRGB10A2Unorm,
+	}
+	for _, want := range []blendSpace{blendGamma, blendLinear} {
+		t.Run(want.String(), func(t *testing.T) {
+			// Exotic first, so taking the driver's lead would pick one.
+			offered := append(append([]wgpu.TextureFormat{}, exotic...),
+				wgpu.TextureFormatBGRA8Unorm, wgpu.TextureFormatBGRA8UnormSrgb)
+			got := pickFormat(offered, want)
+			if !isGammaFormat(got) && !isSrgbFormat(got) {
+				t.Errorf("pickFormat picked %v, which this renderer cannot draw into", got)
+			}
+			if spaceOf(got) != want {
+				t.Errorf("pickFormat picked %v, blending in %v, want %v", got, spaceOf(got), want)
 			}
 		})
 	}
@@ -143,24 +179,31 @@ func TestCoverageExponent(t *testing.T) {
 	light := [4]float32{0.949, 0.949, 0.949, 1} // #f2f2f2
 	dark := [4]float32{0.259, 0.259, 0.259, 1}  // #424242
 
-	if got, want := coverageExponent(dark, light, 0), float32(1/darkOnLightGamma); got != want {
-		t.Errorf("dark ink on light paper: exponent %v, want %v — the edges need thickening", got, want)
+	if got, want := coverageExponent(dark, light, 0, blendLinear), float32(1/darkOnLightGamma); got != want {
+		t.Errorf("dark on light, blended linearly: exponent %v, want %v — the edges need thickening", got, want)
 	}
-	if got := coverageExponent(light, dark, 0); got != 1 {
+	if got := coverageExponent(light, dark, 0, blendLinear); got != 1 {
 		t.Errorf("light ink on dark paper: exponent %v, want 1 — linear blending already reads heavy", got)
 	}
+	// The bend exists to undo what linear blending does; gamma-space needs none of it.
+	if got := coverageExponent(dark, light, 0, blendGamma); got != 1 {
+		t.Errorf("dark on light, blended in gamma space: exponent %v, want 1", got)
+	}
 
-	// The knob wins over the theme, in either direction.
-	if got, want := coverageExponent(dark, light, 2), float32(0.5); got != want {
+	// The knob wins over the derivation, in either space.
+	if got, want := coverageExponent(dark, light, 2, blendLinear), float32(0.5); got != want {
 		t.Errorf("gamma 2 gave %v, want %v", got, want)
 	}
-	if got, want := coverageExponent(light, dark, 1.25), float32(1/1.25); got != want {
+	if got, want := coverageExponent(dark, light, 2, blendGamma), float32(0.5); got != want {
+		t.Errorf("gamma 2 in gamma space gave %v, want %v", got, want)
+	}
+	if got, want := coverageExponent(light, dark, 1.25, blendLinear), float32(1/1.25); got != want {
 		t.Errorf("gamma 1.25 gave %v, want %v", got, want)
 	}
 
 	// Clamped, never zero or negative: pow with either would be a screen of NaN.
 	for _, gamma := range []float64{-3, 0.01, 1e9} {
-		if got := coverageExponent(dark, light, gamma); got <= 0 || got > 4 {
+		if got := coverageExponent(dark, light, gamma, blendLinear); got <= 0 || got > 4 {
 			t.Errorf("gamma %v gave exponent %v, want something a pow can use", gamma, got)
 		}
 	}

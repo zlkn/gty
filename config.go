@@ -47,6 +47,9 @@ type fontConfig struct {
 
 	// BoxDrawing false takes the frames and blocks from the face; see internal/font/boxdraw.go.
 	BoxDrawing *bool `toml:"box_drawing"`
+
+	// Blend is where a glyph's edge is mixed with what is behind it; see blendSpace.
+	Blend *string `toml:"blend"`
 }
 
 type colorConfig struct {
@@ -167,6 +170,13 @@ func (c config) apply() error {
 	}
 	if bd := c.Font.BoxDrawing; bd != nil {
 		fontBoxDrawing = *bd
+	}
+	if b := c.Font.Blend; b != nil {
+		space, ok := blendNames[strings.ToLower(strings.TrimSpace(*b))]
+		if !ok {
+			return fmt.Errorf("font.blend is %q, want one of %s", *b, blendList())
+		}
+		fontBlend, blendUsed = space, space
 	}
 
 	if d := c.Window.Decorations; d != nil {

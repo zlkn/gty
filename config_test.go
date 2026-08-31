@@ -21,13 +21,14 @@ func keepConfig(t *testing.T) {
 	bg, fg, sel, named := backgroundRGBA, foreground, selectionColor, base16
 	tint, shape := cursorTint, cursorShapeDefault
 	family, size, gamma, icons := fontFamily, fontSize, fontGamma, fontIconScale
-	boxes, frame := fontBoxDrawing, windowDecorations
+	boxes, frame, blend := fontBoxDrawing, windowDecorations, fontBlend
 	binds, bound := maps.Clone(keybinds), maps.Clone(boundKeys)
 	t.Cleanup(func() {
 		backgroundRGBA, foreground, selectionColor, base16 = bg, fg, sel, named
 		cursorTint, cursorShapeDefault = tint, shape
 		fontFamily, fontSize, fontGamma, fontIconScale = family, size, gamma, icons
 		fontBoxDrawing, windowDecorations = boxes, frame
+		fontBlend, blendUsed = blend, blend
 		keybinds, boundKeys = binds, bound
 		refreshTheme()
 	})
@@ -174,7 +175,7 @@ func TestLoadConfigFont(t *testing.T) {
 	keepConfig(t)
 
 	if err := loadConfig(writeConfig(t,
-		"[font]\nfamily = \"Iosevka\"\nsize = 13.5\ngamma = 2\nicon_scale = 0.6\nbox_drawing = false\n")); err != nil {
+		"[font]\nfamily = \"Iosevka\"\nsize = 13.5\ngamma = 2\nicon_scale = 0.6\nbox_drawing = false\nblend = \"linear\"\n")); err != nil {
 		t.Fatal(err)
 	}
 	if fontFamily != "Iosevka" {
@@ -195,6 +196,30 @@ func TestLoadConfigFont(t *testing.T) {
 	}
 	if fontBoxDrawing {
 		t.Error("box_drawing = false left the frames drawn here")
+	}
+	if fontBlend != blendLinear {
+		t.Errorf("blend is %v, want linear", fontBlend)
+	}
+}
+
+// TestLoadConfigBlendDefaultsToGamma: the default is what keeps antialiased colour
+// saturated, so a config that says nothing must not fall back to linear.
+func TestLoadConfigBlendDefaultsToGamma(t *testing.T) {
+	keepConfig(t)
+
+	if fontBlend != blendGamma {
+		t.Fatalf("the default blend is %v, want gamma", fontBlend)
+	}
+	if err := loadConfig(writeConfig(t, "[font]\nsize = 12\n")); err != nil {
+		t.Fatal(err)
+	}
+	if fontBlend != blendGamma {
+		t.Errorf("a config with no blend key left it %v", fontBlend)
+	}
+	if err := loadConfig(writeConfig(t, "[font]\nblend = \"sideways\"\n")); err == nil {
+		t.Error("font.blend = \"sideways\" was accepted")
+	} else if !strings.Contains(err.Error(), "gamma") || !strings.Contains(err.Error(), "linear") {
+		t.Errorf("the error is %q; it has to list what is allowed", err)
 	}
 }
 

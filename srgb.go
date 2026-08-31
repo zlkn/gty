@@ -7,7 +7,10 @@ package main
 // vs_main in both shaders, and here for the clear value, which no shader sees.
 
 import (
+	"maps"
 	"math"
+	"slices"
+	"strings"
 
 	"github.com/oliverbestmann/webgpu/wgpu"
 )
@@ -22,12 +25,72 @@ func isSrgbFormat(f wgpu.TextureFormat) bool {
 	return false
 }
 
-// pickFormat keeps the driver's order except that an sRGB variant wins: it is what a
-// compositor wants, and it puts blending in linear light.
-func pickFormat(formats []wgpu.TextureFormat) wgpu.TextureFormat {
-	for _, f := range formats {
-		if isSrgbFormat(f) {
-			return f
+// isGammaFormat reports whether the target takes what is written to it unchanged, so
+// that blending happens in the sRGB numbers.
+//
+// A list rather than "not sRGB": a surface also offers RGBA16Unorm, RGB10A2Unorm and
+// the like, which need device features this build does not enable. Choosing one of those
+// fails pipeline creation outright, which is a black window rather than a wrong colour.
+func isGammaFormat(f wgpu.TextureFormat) bool {
+	switch f {
+	case wgpu.TextureFormatRGBA8Unorm, wgpu.TextureFormatBGRA8Unorm:
+		return true
+	}
+	return false
+}
+
+// blendSpace is where the GPU mixes a glyph's edge with what is behind it. The surface
+// format decides it: an sRGB target is blended in linear light, a plain UNORM one in the
+// numbers as written.
+type blendSpace uint8
+
+const (
+	// blendGamma mixes the sRGB numbers. Not physically right, and what every terminal
+	// does: linear light drags a half-covered pixel towards grey, so #007474 antialiases
+	// to #adbcbc where this gives #76b0b0.
+	blendGamma blendSpace = iota
+	blendLinear
+)
+
+var blendNames = map[string]blendSpace{
+	"gamma":  blendGamma,
+	"linear": blendLinear,
+}
+
+func blendList() string {
+	return strings.Join(slices.Sorted(maps.Keys(blendNames)), " ")
+}
+
+func (b blendSpace) String() string {
+	if b == blendLinear {
+		return "linear"
+	}
+	return "gamma"
+}
+
+// spaceOf is the blending a format imposes. Asked of the format already chosen, so the
+// answer is never about one this renderer would refuse.
+func spaceOf(f wgpu.TextureFormat) blendSpace {
+	if isSrgbFormat(f) {
+		return blendLinear
+	}
+	return blendGamma
+}
+
+// pickFormat keeps the driver's order and takes the first format blending in want. The
+// other known kind is the fallback before the driver's own lead, so a device offering
+// neither still gets something this renderer can draw into; the caller reads the space
+// back off the result either way.
+func pickFormat(formats []wgpu.TextureFormat, want blendSpace) wgpu.TextureFormat {
+	first, second := isGammaFormat, isSrgbFormat
+	if want == blendLinear {
+		first, second = isSrgbFormat, isGammaFormat
+	}
+	for _, fits := range []func(wgpu.TextureFormat) bool{first, second} {
+		for _, f := range formats {
+			if fits(f) {
+				return f
+			}
 		}
 	}
 	if len(formats) == 0 {
@@ -70,21 +133,22 @@ func relLuminance(c [4]float32) float64 {
 	return 0.2126*r + 0.7152*g + 0.0722*b
 }
 
-// darkOnLightGamma bends the coverage curve when ink is darker than paper: linear blending
-// puts a half-covered pixel nearer the paper than the eye expects, which reads thin. Only
-// the edges move — a full core is a fixed point of any exponent.
+// darkOnLightGamma bends the coverage curve for dark ink on light paper blended in linear
+// light, which puts a half-covered pixel nearer the paper than the eye expects and reads
+// thin. Only the edges move — a full core is a fixed point of any exponent. Gamma-space
+// blending needs none of this; it is already heavy enough there.
 //
 // Past the usual 1.5-2 because this build draws Light and hints nothing: at 17pt, 16 of 94
 // ASCII glyphs never reach full coverage ('_' peaks at 58%). Past 2.6 it reads as bold.
 const darkOnLightGamma = 2.2
 
 // coverageExponent is what the shader raises coverage to before it becomes alpha; 1 leaves
-// the rasteriser's own. gamma overrides the theme when positive, clamped because pow with a
-// zero or negative exponent is worse than a wrong-looking screen.
-func coverageExponent(fg, bg [4]float32, gamma float64) float32 {
+// the rasteriser's own. gamma overrides the derivation when positive, clamped because pow
+// with a zero or negative exponent is worse than a wrong-looking screen.
+func coverageExponent(fg, bg [4]float32, gamma float64, space blendSpace) float32 {
 	if gamma <= 0 {
-		gamma = 1 // light on dark already reads heavy enough
-		if relLuminance(bg) > relLuminance(fg) {
+		gamma = 1 // gamma-space blending, and light on dark, already read heavy enough
+		if space == blendLinear && relLuminance(bg) > relLuminance(fg) {
 			gamma = darkOnLightGamma
 		}
 	}

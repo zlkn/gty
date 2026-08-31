@@ -49,7 +49,20 @@ func newTestGPU(t testing.TB) (*wgpu.Device, *wgpu.Queue) {
 
 func newTestText(t testing.TB, device *wgpu.Device, queue *wgpu.Queue) *text {
 	t.Helper()
-	txt, err := newText(device, queue, testFormat, fontSize, 1)
+	return newTestTextIn(t, device, queue, testFormat)
+}
+
+// newTestTextIn also points the coverage exponent at the format's blend space. The app
+// does this in newApp once the surface is configured; without it a test renders to one
+// space with the curve derived for the other.
+func newTestTextIn(t testing.TB, device *wgpu.Device, queue *wgpu.Queue, format wgpu.TextureFormat) *text {
+	t.Helper()
+	was := blendUsed
+	blendUsed = spaceOf(format)
+	refreshTheme()
+	t.Cleanup(func() { blendUsed = was; refreshTheme() })
+
+	txt, err := newText(device, queue, format, fontSize, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,6 +92,13 @@ func splitLayout(t *testing.T, txt *text, w, h int) ([]*pane, []image.Rectangle)
 // looked at without a window.
 func renderOffscreen(t *testing.T, device *wgpu.Device, queue *wgpu.Queue, draw func(pass *wgpu.RenderPassEncoder)) *image.RGBA {
 	t.Helper()
+	return renderOffscreenTo(t, device, queue, testFormat, draw)
+}
+
+// renderOffscreenTo is renderOffscreen against a stated format, for the tests that
+// compare the two blend spaces. Both are RGBA8, so the read-back layout is the same.
+func renderOffscreenTo(t *testing.T, device *wgpu.Device, queue *wgpu.Queue, format wgpu.TextureFormat, draw func(pass *wgpu.RenderPassEncoder)) *image.RGBA {
+	t.Helper()
 
 	extent := wgpu.Extent3D{Width: testWidth, Height: testHeight, DepthOrArrayLayers: 1}
 	target, err := device.TryCreateTexture(&wgpu.TextureDescriptor{
@@ -86,7 +106,7 @@ func renderOffscreen(t *testing.T, device *wgpu.Device, queue *wgpu.Queue, draw 
 		MipLevelCount: 1,
 		SampleCount:   1,
 		Dimension:     wgpu.TextureDimension2D,
-		Format:        testFormat,
+		Format:        format,
 		Usage:         wgpu.TextureUsageRenderAttachment | wgpu.TextureUsageCopySrc,
 	})
 	if err != nil {
@@ -120,7 +140,7 @@ func renderOffscreen(t *testing.T, device *wgpu.Device, queue *wgpu.Queue, draw 
 			View:       view,
 			LoadOp:     wgpu.LoadOpClear,
 			StoreOp:    wgpu.StoreOpStore,
-			ClearValue: clearValue(backgroundRGBA, isSrgbFormat(testFormat)),
+			ClearValue: clearValue(backgroundRGBA, isSrgbFormat(format)),
 		}},
 	})
 	draw(pass)
@@ -772,7 +792,7 @@ func TestCoverageGammaLeavesIconsAlone(t *testing.T) {
 		})
 	}
 
-	plain, bent := render(1), render(coverageExponent(foreground, backgroundRGBA, 0))
+	plain, bent := render(1), render(coverageExponent(foreground, backgroundRGBA, 0, blendLinear))
 	// From zero, not from the cell: the overhang reaches back into the padding.
 	icon := image.Rect(0, padding, padding+3*cellW, padding+cellH)
 	letters := image.Rect(padding+4*cellW, padding, padding+12*cellW, padding+cellH)
@@ -807,7 +827,7 @@ func TestCoverageGammaThickensOnlyTheEdges(t *testing.T) {
 		})
 	}
 
-	plain, bent := render(1), render(coverageExponent(foreground, backgroundRGBA, 0))
+	plain, bent := render(1), render(coverageExponent(foreground, backgroundRGBA, 0, blendLinear))
 	row := image.Rect(0, 0, testWidth, 200)
 
 	if got, want := inkMass(bent, row), inkMass(plain, row); got <= want {
@@ -933,4 +953,56 @@ func TestTabBarRenders(t *testing.T) {
 	f, _ := os.Create("/tmp/gty-tabs.png")
 	defer f.Close()
 	png.Encode(f, img)
+}
+
+// chroma is how far a pixel is from grey: the spread of its channels.
+func chroma(p [4]uint8) int {
+	lo, hi := int(p[0]), int(p[0])
+	for _, v := range p[:3] {
+		lo, hi = min(lo, int(v)), max(hi, int(v))
+	}
+	return hi - lo
+}
+
+// TestBlendSpaceKeepsColourSaturated is the regression guard for the whole point of
+// blendGamma: linear light mixes a half-covered pixel towards grey, so a teal glyph
+// antialiases to something nearly colourless. Same glyph, same colours, two formats,
+// each with the coverage curve its own space wants.
+func TestBlendSpaceKeepsColourSaturated(t *testing.T) {
+	device, queue := newTestGPU(t)
+
+	const ink = "#007474"
+	render := func(format wgpu.TextureFormat) *image.RGBA {
+		txt := newTestTextIn(t, device, queue, format)
+		p := gridPane(1, image.Rect(0, 0, testWidth, testHeight), 40, 8,
+			"\x1b[38;2;0;116;116mMMMM")
+		txt.Layout([]*pane{p}, p, nil)
+		return renderOffscreenTo(t, device, queue, format, func(pass *wgpu.RenderPassEncoder) {
+			txt.Draw(pass, []*pane{p}, testWidth, testHeight)
+		})
+	}
+	lin, gam := render(wgpu.TextureFormatRGBA8UnormSrgb), render(wgpu.TextureFormatRGBA8Unorm)
+
+	// The most colourful pixel each way. A glyph's core is the ink in both spaces; the
+	// difference lives entirely in the partly covered pixels around it.
+	best := func(img *image.RGBA) (int, [4]uint8) {
+		top, at := 0, [4]uint8{}
+		for y := range testHeight {
+			for x := range testWidth {
+				if p := pixelAt(img, x, y); chroma(p) > top {
+					top, at = chroma(p), p
+				}
+			}
+		}
+		return top, at
+	}
+	linTop, linPx := best(lin)
+	gamTop, gamPx := best(gam)
+	t.Logf("%s antialiases to at best %v (chroma %d) linearly, %v (chroma %d) in gamma space",
+		ink, linPx, linTop, gamPx, gamTop)
+
+	if gamTop <= linTop {
+		t.Errorf("gamma space peaks at chroma %d and linear at %d; gamma has to hold more colour",
+			gamTop, linTop)
+	}
 }
