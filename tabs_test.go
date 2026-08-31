@@ -15,7 +15,7 @@ func tabOf1(id int) *tab {
 	return &tab{root: &node{pane: p}, focused: p}
 }
 
-// TestSplitBar: bar and content tile the surface, and a single tab takes no bar.
+// TestSplitBar: bar and content tile the surface, a single tab included.
 func TestSplitBar(t *testing.T) {
 	surface := image.Rect(0, 0, 900, 600)
 
@@ -23,8 +23,12 @@ func TestSplitBar(t *testing.T) {
 		t.Run(fmt.Sprintf("%gx", scale), func(t *testing.T) {
 			withScale(t, scale)
 
-			if bar, content := splitBar(surface, 1, testCellH); !bar.Empty() || content != surface {
-				t.Errorf("one tab took a %v bar and left %v, want no bar and the whole surface", bar, content)
+			// One tab gets a bar too: the window has to open as it will go on looking.
+			if bar, _ := splitBar(surface, 1, testCellH); bar.Dy() != barHeight(testCellH) {
+				t.Errorf("one tab took a %v bar, want one %d px tall", bar, barHeight(testCellH))
+			}
+			if bar, content := splitBar(surface, 0, testCellH); !bar.Empty() || content != surface {
+				t.Errorf("no tabs took a %v bar, want none", bar)
 			}
 
 			bar, content := splitBar(surface, 3, testCellH)

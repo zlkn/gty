@@ -152,11 +152,11 @@ const (
 // the terminal off.
 func barHeight(cellH int) int { return cellH*3/2 + px(dividerPad) }
 
-// splitBar gives no bar to a lone tab, so a window that was never split into tabs looks
-// like one that cannot be, and none to a window too short to spare the pixels.
+// splitBar gives the bar to a lone tab as well, so the window opens looking the way it
+// will keep looking. Only a window too short to spare the pixels goes without.
 func splitBar(surface image.Rectangle, ntabs, cellH int) (bar, content image.Rectangle) {
 	h := barHeight(cellH)
-	if ntabs < 2 || h >= surface.Dy() {
+	if ntabs < 1 || h >= surface.Dy() {
 		return image.Rectangle{}, surface
 	}
 	cut := surface.Min.Y + h
