@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	"gty/internal/vte"
+
 	"github.com/go-gl/glfw/v3.4/glfw"
 )
 
@@ -146,8 +148,8 @@ func TestLoadConfigCursor(t *testing.T) {
 		"[cursor]\nshape = \" Bar \"\n\n[colors]\ncursor = \"#ff0000\"\n")); err != nil {
 		t.Fatal(err)
 	}
-	if cursorShapeDefault != cursorBar {
-		t.Errorf("shape is %d, want the bar %d", cursorShapeDefault, cursorBar)
+	if cursorShapeDefault != vte.CursorBar {
+		t.Errorf("shape is %d, want the bar %d", cursorShapeDefault, vte.CursorBar)
 	}
 	if want := [4]float32{1, 0, 0, 1}; cursorColor != want {
 		t.Errorf("cursor colour is %v, want %v", cursorColor, want)
@@ -155,18 +157,8 @@ func TestLoadConfigCursor(t *testing.T) {
 	if cursorColor == foreground {
 		t.Error("the configured cursor colour still follows the foreground")
 	}
-
-	// A pane starts on it, and DECSCUSR 0 and RIS come back to it rather than to a block.
-	p := vtPane(20, 3)
-	if p.cursor.shape != cursorBar {
-		t.Errorf("a fresh pane is shape %d, want the configured %d", p.cursor.shape, cursorBar)
-	}
-	for _, in := range []string{"\x1b[2 q\x1b[0 q", "\x1b[2 q\x1bc"} {
-		p.feed([]byte(in))
-		if p.cursor.shape != cursorBar {
-			t.Errorf("%q left shape %d, want the configured %d", in, p.cursor.shape, cursorBar)
-		}
-	}
+	// That a terminal starts on this shape, and that DECSCUSR 0 and RIS come back to it
+	// rather than to a block, is the model's own contract; see vte.
 }
 
 // TestLoadConfigFont covers the [font] section, whose keys are not colours but reach the

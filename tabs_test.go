@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"gty/internal/font"
+	"gty/internal/vte"
 )
 
 // tabOf1 is a tab holding one pane.
@@ -63,7 +63,7 @@ func TestSplitBarTinyWindow(t *testing.T) {
 func TestLayoutBarPacksLeft(t *testing.T) {
 	tabs := []*tab{tabOf1(1), tabOf1(2), tabOf1(3)}
 	for i, tb := range tabs {
-		tb.focused.title = []string{"fish", "vim", "htop"}[i]
+		setTitle(tb.focused, []string{"fish", "vim", "htop"}[i])
 	}
 	bar, _ := splitBar(image.Rect(0, 0, 901, 600), len(tabs), testCellH)
 
@@ -144,13 +144,13 @@ func TestLayoutBarMarksTheActive(t *testing.T) {
 	}
 
 	for _, c := range labels[active].cells {
-		if c.Style != font.Bold {
-			t.Fatalf("the active label is drawn in %v, want bold", c.Style)
+		if c.Attrs&vte.AttrBold == 0 {
+			t.Fatalf("the active label is drawn in attrs %d, want bold", c.Attrs)
 		}
 	}
 	for _, c := range labels[0].cells {
-		if c.Style != font.Regular {
-			t.Fatalf("an inactive label is drawn in %v, want regular", c.Style)
+		if c.Attrs&vte.AttrBold != 0 {
+			t.Fatalf("an inactive label is drawn in attrs %d, want regular", c.Attrs)
 		}
 	}
 	// Both at full strength: bold and the underline are the whole cue.
@@ -167,7 +167,7 @@ func TestLayoutBarSharesACrowdedBar(t *testing.T) {
 	tabs := make([]*tab, 9)
 	for i := range tabs {
 		tabs[i] = tabOf1(i + 1)
-		tabs[i].focused.title = "a rather long window title"
+		setTitle(tabs[i].focused, "a rather long window title")
 	}
 	bar, _ := splitBar(image.Rect(0, 0, 600, 600), len(tabs), testCellH)
 
@@ -268,37 +268,13 @@ func TestBackgroundTabKeepsItsGrid(t *testing.T) {
 	}
 }
 
-// TestOSCTitle: OSC 0 or 2 names the tab, terminated either way.
-func TestOSCTitle(t *testing.T) {
-	for _, tc := range []struct{ name, in, want string }{
-		{"osc 2 ends with ST", "\x1b]2;editing layout.go\x1b\\", "editing layout.go"},
-		{"osc 0 ends with BEL", "\x1b]0;~/Personal/gty\a", "~/Personal/gty"},
-		{"a DEL is not part of a title", "\x1b]2;one\x7ftwo\x1b\\", "onetwo"},
-		{"a colour query is not a title", "\x1b]11;?\x1b\\", ""},
-		{"an empty title clears it", "\x1b]2;\x1b\\", ""},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			if p := vtPane(40, 4, tc.in); p.title != tc.want {
-				t.Errorf("%q left the title %q, want %q", tc.in, p.title, tc.want)
-			}
-		})
-	}
-}
-
-// TestCleanTitleCaps: a shell cannot hang an unbounded string on a tab.
-func TestCleanTitleCaps(t *testing.T) {
-	if got := len([]rune(cleanTitle(strings.Repeat("x", maxTitle+50)))); got != maxTitle {
-		t.Errorf("a title of %d runes came back as %d, want it capped at %d", maxTitle+50, got, maxTitle)
-	}
-}
-
 // TestTabLabelFallback: the number stands in until the shell sets a title.
 func TestTabLabelFallback(t *testing.T) {
 	tb := tabOf1(1)
 	if got, want := tb.label(2), "3: shell"; got != want {
 		t.Errorf("an unnamed tab is called %q, want %q", got, want)
 	}
-	tb.focused.title = "htop"
+	setTitle(tb.focused, "htop")
 	if got := tb.label(2); got != "htop" {
 		t.Errorf("a named tab is called %q, want %q", got, "htop")
 	}

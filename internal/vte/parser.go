@@ -1,16 +1,12 @@
-package vt
+package vte
 
 import "unicode/utf8"
 
-// The DEC ANSI state machine, following Paul Williams' diagram (vt100.net). Written as
-// one switch per state rather than a transition table: same automaton, and in Go the
-// switch is the readable form.
+// The DEC ANSI state machine, following Paul Williams' diagram (vt100.net), as one switch per
+// state rather than a transition table.
 //
-// The automaton has to be complete before anything it recognises can be acted on. A
-// shell running under TERM=xterm-256color emits CSI and OSC from its first prompt, and
-// a parser that only understands what it implements prints the rest as garbage. So the
-// states below are all here, while most of the dispatch handlers are still empty: the
-// sequence is recognised and dropped, not leaked onto the screen.
+// Every state is here even where its dispatch does nothing: a shell emits CSI and OSC from its
+// first prompt, and an incomplete automaton prints the rest as garbage.
 
 const (
 	maxParams        = 16
@@ -21,11 +17,8 @@ const (
 	maxStringLen = 4096
 )
 
-// CSI is one parsed control sequence.
-//
-// sep records how each parameter was introduced, because that is the only thing that
-// separates SGR's two extended-colour forms: 38;2;r;g;b and 38:2::r:g:b mean the same
-// thing but do not have the same parameters.
+// CSI is one parsed control sequence. sep records how each parameter was introduced, the only
+// thing separating SGR's 38;2;r;g;b from its 38:2::r:g:b.
 type CSI struct {
 	Final   byte
 	Private byte // the ? > = < of a private sequence, or zero
@@ -59,16 +52,14 @@ func (c CSI) Raw(i int) int {
 // parameter before it rather than one of its own.
 func (c CSI) Sub(i int) bool { return i < len(c.sep) && c.sep[i] == ':' }
 
-// Sink is what a parsed byte stream drives.
-//
-// Every method is exported because it has to be: a Sink is implemented from outside this
-// package, and an interface carrying an unexported method cannot be.
-type Sink interface {
-	Print(r rune)
-	Execute(b byte)
-	CSIDispatch(c CSI)
-	ESCDispatch(final byte, intermediates []byte)
-	OSCDispatch(data []byte)
+// sink is what a parsed byte stream drives. Terminal implements it, on unexported methods
+// so that the parser's callbacks stay out of the model's API.
+type sink interface {
+	putRune(r rune)
+	execute(b byte)
+	csi(c CSI)
+	esc(final byte, intermediates []byte)
+	osc(data []byte)
 }
 
 type parserState uint8
@@ -90,7 +81,7 @@ const (
 	stSosPmApc
 )
 
-type Parser struct {
+type parser struct {
 	state parserState
 
 	params []int
@@ -106,13 +97,13 @@ type Parser struct {
 
 // parse feeds b through the automaton. It is safe to call with a chunk that cuts a
 // rune or an escape sequence in half; the state carries over.
-func (p *Parser) Parse(b []byte, out Sink) {
+func (p *parser) parse(b []byte, out sink) {
 	for _, c := range b {
 		p.step(c, out)
 	}
 }
 
-func (p *Parser) step(b byte, out Sink) {
+func (p *parser) step(b byte, out sink) {
 	if p.anywhere(b, out) {
 		return
 	}
@@ -123,7 +114,7 @@ func (p *Parser) step(b byte, out Sink) {
 	case stEscape:
 		switch {
 		case isC0(b):
-			out.Execute(b)
+			out.execute(b)
 		case b >= 0x20 && b <= 0x2F:
 			p.collect(b)
 			p.state = stEscapeIntermediate
@@ -140,26 +131,26 @@ func (p *Parser) step(b byte, out Sink) {
 			p.state = stOSCString
 		case b == 0x7F: // DEL is ignored throughout
 		default:
-			out.ESCDispatch(b, p.inter)
+			out.esc(b, p.inter)
 			p.state = stGround
 		}
 
 	case stEscapeIntermediate:
 		switch {
 		case isC0(b):
-			out.Execute(b)
+			out.execute(b)
 		case b >= 0x20 && b <= 0x2F:
 			p.collect(b)
 		case b == 0x7F:
 		default:
-			out.ESCDispatch(b, p.inter)
+			out.esc(b, p.inter)
 			p.state = stGround
 		}
 
 	case stCSIEntry:
 		switch {
 		case isC0(b):
-			out.Execute(b)
+			out.execute(b)
 		case b >= 0x20 && b <= 0x2F:
 			p.collect(b)
 			p.state = stCSIIntermediate
@@ -174,14 +165,14 @@ func (p *Parser) step(b byte, out Sink) {
 			p.state = stCSIParam
 		case b == 0x7F:
 		default:
-			out.CSIDispatch(CSI{Final: b, Private: p.priv, Params: p.params, Inter: p.inter, sep: p.sep})
+			out.csi(CSI{Final: b, Private: p.priv, Params: p.params, Inter: p.inter, sep: p.sep})
 			p.state = stGround
 		}
 
 	case stCSIParam:
 		switch {
 		case isC0(b):
-			out.Execute(b)
+			out.execute(b)
 		case b >= 0x30 && b <= 0x39, b == 0x3B, b == 0x3A:
 			p.param(b)
 		case b >= 0x3C && b <= 0x3F:
@@ -191,28 +182,28 @@ func (p *Parser) step(b byte, out Sink) {
 			p.state = stCSIIntermediate
 		case b == 0x7F:
 		default:
-			out.CSIDispatch(CSI{Final: b, Private: p.priv, Params: p.params, Inter: p.inter, sep: p.sep})
+			out.csi(CSI{Final: b, Private: p.priv, Params: p.params, Inter: p.inter, sep: p.sep})
 			p.state = stGround
 		}
 
 	case stCSIIntermediate:
 		switch {
 		case isC0(b):
-			out.Execute(b)
+			out.execute(b)
 		case b >= 0x20 && b <= 0x2F:
 			p.collect(b)
 		case b >= 0x30 && b <= 0x3F:
 			p.state = stCSIIgnore
 		case b == 0x7F:
 		default:
-			out.CSIDispatch(CSI{Final: b, Private: p.priv, Params: p.params, Inter: p.inter, sep: p.sep})
+			out.csi(CSI{Final: b, Private: p.priv, Params: p.params, Inter: p.inter, sep: p.sep})
 			p.state = stGround
 		}
 
 	case stCSIIgnore:
 		switch {
 		case isC0(b):
-			out.Execute(b)
+			out.execute(b)
 		case b >= 0x40 && b <= 0x7E:
 			p.state = stGround
 		}
@@ -220,7 +211,7 @@ func (p *Parser) step(b byte, out Sink) {
 	case stOSCString:
 		switch {
 		case b == 0x07: // BEL, xterm's terminator and the one everything actually sends
-			out.OSCDispatch(p.str)
+			out.osc(p.str)
 			p.state = stGround
 		case b >= 0x20 || b >= 0x80:
 			if len(p.str) < maxStringLen {
@@ -235,38 +226,36 @@ func (p *Parser) step(b byte, out Sink) {
 	}
 }
 
-func (p *Parser) ground(b byte, out Sink) {
+func (p *parser) ground(b byte, out sink) {
 	switch {
 	case isC0(b):
-		out.Execute(b)
+		out.execute(b)
 	case b == 0x7F: // DEL prints nothing
 	case b < 0x80:
 		p.utf8 = p.utf8[:0]
-		out.Print(rune(b))
+		out.putRune(rune(b))
 	default:
-		// A read can cut a multi-byte rune in half, so bytes accumulate until the
-		// rune is whole. FullRune is true for an invalid lead byte too, which turns
-		// junk into one replacement character instead of stalling the stream.
+		// A read can cut a rune in half, so bytes accumulate. FullRune is true for an
+		// invalid lead byte too, so junk becomes one replacement rather than a stall.
 		p.utf8 = append(p.utf8, b)
 		if utf8.FullRune(p.utf8) {
 			r, _ := utf8.DecodeRune(p.utf8)
-			out.Print(r)
+			out.putRune(r)
 			p.utf8 = p.utf8[:0]
 		} else if len(p.utf8) >= utf8.UTFMax {
-			out.Print(utf8.RuneError)
+			out.putRune(utf8.RuneError)
 			p.utf8 = p.utf8[:0]
 		}
 	}
 }
 
-// anywhere handles the transitions the automaton takes from every state: cancel,
-// substitute, and the escape that abandons whatever was in flight and starts a fresh
-// sequence.
-func (p *Parser) anywhere(b byte, out Sink) bool {
+// anywhere handles the transitions taken from every state: cancel, substitute, and the escape
+// that abandons whatever was in flight.
+func (p *parser) anywhere(b byte, out sink) bool {
 	switch b {
 	case 0x18, 0x1A: // CAN, SUB
 		p.endString(out)
-		out.Execute(b)
+		out.execute(b)
 		p.state = stGround
 		return true
 	case 0x1B: // ESC
@@ -280,26 +269,25 @@ func (p *Parser) anywhere(b byte, out Sink) bool {
 
 // endString closes an OSC that something else has interrupted. A well-formed OSC ends
 // with ST, which is ESC \ — so this is also the ordinary path.
-func (p *Parser) endString(out Sink) {
+func (p *parser) endString(out sink) {
 	if p.state == stOSCString {
-		out.OSCDispatch(p.str)
+		out.osc(p.str)
 	}
 }
 
-func (p *Parser) clear() {
+func (p *parser) clear() {
 	p.params, p.sep, p.inter, p.priv = p.params[:0], p.sep[:0], p.inter[:0], 0
 }
 
-func (p *Parser) collect(b byte) {
+func (p *parser) collect(b byte) {
 	if len(p.inter) < maxIntermediates {
 		p.inter = append(p.inter, b)
 	}
 }
 
-// param folds a digit into the current parameter, or opens the next one on a separator
-// and remembers which separator it was. An omitted parameter reads as zero, which every
-// handler treats as "use the default".
-func (p *Parser) param(b byte) {
+// param folds a digit into the current parameter, or opens the next on a separator and
+// remembers which. An omitted parameter reads as zero, which handlers take as the default.
+func (p *parser) param(b byte) {
 	if len(p.params) == 0 {
 		p.params, p.sep = append(p.params, 0), append(p.sep, 0)
 	}

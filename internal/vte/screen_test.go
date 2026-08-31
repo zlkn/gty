@@ -1,14 +1,12 @@
-package main
+package vte
 
 import (
 	"slices"
 	"testing"
-
-	"gty/internal/font"
 )
 
 func testScreen(cols, rows int) (*screen, *scrollback) {
-	out := newScrollback()
+	out := &scrollback{}
 	return newScreen(cols, rows, out), out
 }
 
@@ -31,8 +29,8 @@ func TestScreenPutsAndWraps(t *testing.T) {
 	if got, want := screenText(s), []string{"abcd", "efg", ""}; !slices.Equal(got, want) {
 		t.Errorf("screen reads %q, want %q", got, want)
 	}
-	if out.Len() != 0 {
-		t.Errorf("%d lines reached the history; nothing has scrolled off a three-row screen", out.Len())
+	if out.len() != 0 {
+		t.Errorf("%d lines reached the history; nothing has scrolled off a three-row screen", out.len())
 	}
 	if s.curRow != 1 || s.curCol != 3 {
 		t.Errorf("cursor at row %d col %d, want row 1 col 3", s.curRow, s.curCol)
@@ -123,13 +121,13 @@ func TestScreenScrollsIntoHistory(t *testing.T) {
 	crlf(s)
 	writeTo(s, "third")
 
-	if out.Len() != 1 {
-		t.Fatalf("%d lines reached the history, want 1", out.Len())
+	if out.len() != 1 {
+		t.Fatalf("%d lines reached the history, want 1", out.len())
 	}
-	if got, want := rowText(out.Row(0).cells), "first"; got != want {
+	if got, want := out.row(0).String(), "first"; got != want {
 		t.Errorf("history holds %q, want %q", got, want)
 	}
-	if got := len(out.Row(0).cells); got != len("first") {
+	if got := len(out.row(0).Cells); got != len("first") {
 		t.Errorf("the history row is %d cells wide, want %d: the padding was not trimmed", got, len("first"))
 	}
 	if got, want := screenText(s), []string{"second", "third"}; !slices.Equal(got, want) {
@@ -150,7 +148,7 @@ func TestScreenResizeWidth(t *testing.T) {
 	}
 
 	s.resize(8, 2)
-	if got := len(s.lines[0].cells); got != 8 {
+	if got := len(s.lines[0].Cells); got != 8 {
 		t.Errorf("row is %d cells after widening, want 8", got)
 	}
 	if got, want := screenText(s)[0], "abcd"; got != want {
@@ -179,10 +177,10 @@ func TestScreenResizeShedsFromTheTop(t *testing.T) {
 	if s.curRow != 1 {
 		t.Errorf("cursor is on row %d, want 1 — it must stay with its line", s.curRow)
 	}
-	if got, want := out.Len(), 2; got != want {
+	if got, want := out.len(), 2; got != want {
 		t.Errorf("%d lines went to the history, want %d", got, want)
 	}
-	if got, want := rowText(out.Row(0).cells), "one"; got != want {
+	if got, want := out.row(0).String(), "one"; got != want {
 		t.Errorf("history starts at %q, want %q", got, want)
 	}
 }
@@ -200,7 +198,7 @@ func TestScreenResizeGrows(t *testing.T) {
 	}
 }
 
-// TestScreenZeroGrid: a pane too small for one cell must absorb writes rather than
+// TestScreenZeroGrid: a pane too small for one Cell must absorb writes rather than
 // index into nothing.
 func TestScreenZeroGrid(t *testing.T) {
 	s, _ := testScreen(0, 0)
@@ -214,34 +212,27 @@ func TestScreenZeroGrid(t *testing.T) {
 	}
 }
 
-// TestScreenInvalidatesShapingOnWrite: a live row changes constantly, so its cached
-// glyphs have to be dropped the moment it is written to — otherwise the screen would
-// have to be reshaped whole every frame.
-func TestScreenInvalidatesShapingOnWrite(t *testing.T) {
+// TestScreenBumpsGenOnWrite: a live row changes constantly, so its version has to move the
+// moment it is written to — that is the whole of what tells a view to reshape it.
+func TestScreenBumpsGenOnWrite(t *testing.T) {
 	s, _ := testScreen(10, 1)
 	writeTo(s, "ab")
 
-	calls := 0
-	shape := func(cells []cell, dst []font.GID) []font.GID {
-		calls++
-		return append(dst, font.GID(len(cells)))
-	}
-	s.row(0).shaped(s.gen, shape)
-	s.row(0).shaped(s.gen, shape)
-	if calls != 1 {
-		t.Errorf("an unchanged row shaped %d times, want 1", calls)
-	}
-
+	was := s.row(0).Gen
 	writeTo(s, "c")
-	s.row(0).shaped(s.gen, shape)
-	if calls != 2 {
-		t.Errorf("shaped %d times after a write, want 2", calls)
+	if s.row(0).Gen == was {
+		t.Errorf("the row is still Gen %d after a write; a view would keep its stale glyphs", was)
 	}
 
+	was = s.row(0).Gen
 	s.resize(20, 1)
-	s.row(0).shaped(s.gen, shape)
-	if calls != 3 {
-		t.Errorf("shaped %d times after a width change, want 3", calls)
+	if s.row(0).Gen == was {
+		t.Errorf("the row is still Gen %d after a width change", was)
+	}
+
+	was = s.row(0).Gen
+	if got := s.row(0).Gen; got != was {
+		t.Errorf("reading a row moved it from Gen %d to %d", was, got)
 	}
 }
 
@@ -253,15 +244,15 @@ func TestTrimBlanks(t *testing.T) {
 		{"", ""},
 		{"a b ", "a b"},
 	} {
-		if got := rowText(cellsOf(tc.in)); got != tc.want {
-			t.Errorf("trimBlanks(%q) reads %q, want %q", tc.in, got, tc.want)
+		if got := (Row{Cells: cellsOf(tc.in)}).String(); got != tc.want {
+			t.Errorf("TrimBlanks(%q) reads %q, want %q", tc.in, got, tc.want)
 		}
 	}
 
 	// An unwritten cell is blank too: that is what lets clear() blank a row.
-	row := make([]cell, 5)
+	row := make([]Cell, 5)
 	copy(row, cellsOf("hi"))
-	if got := len(trimBlanks(row)); got != 2 {
+	if got := len(TrimBlanks(row)); got != 2 {
 		t.Errorf("a row of two characters padded with zero cells trimmed to %d, want 2", got)
 	}
 }
@@ -273,6 +264,6 @@ func TestScreenWideRunes(t *testing.T) {
 		t.Errorf("screen reads %q, want %q", got, want)
 	}
 	if s.curCol != len([]rune("héllo")) {
-		t.Errorf("cursor at column %d, want %d: a rune is one cell", s.curCol, len([]rune("héllo")))
+		t.Errorf("cursor at column %d, want %d: a rune is one Cell", s.curCol, len([]rune("héllo")))
 	}
 }

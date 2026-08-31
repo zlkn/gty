@@ -1,13 +1,12 @@
 //go:build !windows
 
-package pty
+package vte
 
-// What this file is for: the contract a Session owes its caller, tested without a pane,
-// a parser or a grid in the way. The end-to-end test — bytes from a real shell landing
-// as text on the screen — lives in the root package and covers all three at once, so it
-// cannot say which of them broke. These can, and being inside the package they can also
-// reach s.pend, s.err and s.cmd, which is where the answers to "was the child reaped"
-// and "what does a departed shell leave behind" actually live.
+// What this file is for: the contract a pty owes its caller, tested without a parser or a
+// grid in the way. The end-to-end test — bytes from a real shell landing as text on the
+// screen — covers all three at once, so it cannot say which of them broke. These can, and
+// they can also reach s.pend, s.err and s.cmd, which is where the answers to "was the
+// child reaped" and "what does a departed shell leave behind" actually live.
 
 import (
 	"errors"
@@ -23,11 +22,11 @@ import (
 // session starts cmd on a pty and hands back the session together with the channel its
 // wake callback feeds. Buffered and non-blocking, like the real one: the reader goroutine
 // must never stall on a listener that has stopped listening.
-func session(t *testing.T, cmd *exec.Cmd, cols, rows int) (*Session, <-chan struct{}) {
+func session(t *testing.T, cmd *exec.Cmd, cols, rows int) (*pty, <-chan struct{}) {
 	t.Helper()
 
 	woken := make(chan struct{}, 64)
-	s, err := StartCommand(cmd, cols, rows, func() {
+	s, err := startPTY(cmd, cols, rows, func() {
 		select {
 		case woken <- struct{}{}:
 		default:
@@ -36,13 +35,13 @@ func session(t *testing.T, cmd *exec.Cmd, cols, rows int) (*Session, <-chan stru
 	if err != nil {
 		t.Skipf("no pty available: %v", err)
 	}
-	t.Cleanup(s.Close)
+	t.Cleanup(s.close)
 	return s, woken
 }
 
 // drainUntil reads the way the event loop does — block for a wake, take whatever is
 // there — until want turns up, and returns everything read.
-func drainUntil(t *testing.T, s *Session, woken <-chan struct{}, want string) string {
+func drainUntil(t *testing.T, s *pty, woken <-chan struct{}, want string) string {
 	t.Helper()
 
 	var buf, all []byte
@@ -55,7 +54,7 @@ func drainUntil(t *testing.T, s *Session, woken <-chan struct{}, want string) st
 		}
 
 		var err error
-		buf, err = s.Take(buf)
+		buf, err = s.take(buf)
 		all = append(all, buf...)
 		if strings.Contains(string(all), want) {
 			return string(all)
@@ -72,16 +71,16 @@ func drainUntil(t *testing.T, s *Session, woken <-chan struct{}, want string) st
 // No process here on purpose. pend is reachable from inside the package, so the buffer
 // handover is testable on its own, with no timing in it to go flaky.
 func TestTakeEmptiesTheBuffer(t *testing.T) {
-	s := &Session{pend: []byte("first")}
+	s := &pty{pend: []byte("first")}
 
-	got, err := s.Take(nil)
+	got, err := s.take(nil)
 	if string(got) != "first" || err != nil {
 		t.Fatalf("Take gave %q, %v; want %q and no error", got, err, "first")
 	}
 
 	// Passing the same slice back is how the caller avoids allocating per frame; it must
 	// come back empty rather than still holding the previous chunk.
-	got, err = s.Take(got)
+	got, err = s.take(got)
 	if len(got) != 0 || err != nil {
 		t.Errorf("the second Take gave %q, %v; want nothing and no error", got, err)
 	}
@@ -91,9 +90,9 @@ func TestTakeEmptiesTheBuffer(t *testing.T) {
 // same call, and the caller is expected to feed the bytes before acting on the error.
 // Handing the error over early would drop whatever the shell printed on its way out.
 func TestTakeReportsTheErrorAfterTheLastBytes(t *testing.T) {
-	s := &Session{pend: []byte("goodbye"), err: io.EOF}
+	s := &pty{pend: []byte("goodbye"), err: io.EOF}
 
-	got, err := s.Take(nil)
+	got, err := s.take(nil)
 	if string(got) != "goodbye" {
 		t.Errorf("Take gave %q, want the last bytes %q alongside the error", got, "goodbye")
 	}
@@ -125,7 +124,7 @@ func TestTheShellsDepartureWakesTheLoop(t *testing.T) {
 		}
 
 		var err error
-		if buf, err = s.Take(buf); err != nil {
+		if buf, err = s.take(buf); err != nil {
 			if !errors.Is(err, io.EOF) && !errors.Is(err, syscall.EIO) {
 				t.Errorf("a departed shell surfaced as %v; want %v or %v", err, io.EOF, syscall.EIO)
 			}
@@ -145,7 +144,7 @@ func TestTheShellsDepartureWakesTheLoop(t *testing.T) {
 func TestResizeReachesTheChild(t *testing.T) {
 	s, woken := session(t, exec.Command("/bin/sh", "-c", "sleep 1; stty size"), 20, 5)
 
-	s.Resize(97, 31)
+	s.resize(97, 31)
 	drainUntil(t, s, woken, "31 97") // rows first, which is how stty prints it
 }
 
@@ -158,7 +157,7 @@ func TestResizeReachesTheChild(t *testing.T) {
 func TestCloseReapsTheChild(t *testing.T) {
 	s, _ := session(t, exec.Command("/bin/sh", "-c", "sleep 30"), 80, 24)
 
-	s.Close()
+	s.close()
 	if s.cmd.ProcessState == nil {
 		t.Fatal("Close returned before the child was reaped")
 	}
@@ -188,7 +187,7 @@ func TestStartGivesTheShellItsEnvironment(t *testing.T) {
 	t.Setenv("SHELL", "/bin/sh")
 
 	woken := make(chan struct{}, 64)
-	s, err := Start(80, 24, func() {
+	s, err := startShell(80, 24, func() {
 		select {
 		case woken <- struct{}{}:
 		default:
@@ -197,9 +196,9 @@ func TestStartGivesTheShellItsEnvironment(t *testing.T) {
 	if err != nil {
 		t.Skipf("no pty available: %v", err)
 	}
-	t.Cleanup(s.Close)
+	t.Cleanup(s.close)
 
 	// The brackets keep the answer apart from the tty's echo of the line that asked.
-	s.Write([]byte("echo \"[$TERM][$COLORTERM]\"\n"))
+	s.write([]byte("echo \"[$TERM][$COLORTERM]\"\n"))
 	drainUntil(t, s, woken, "[xterm-256color][truecolor]")
 }

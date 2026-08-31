@@ -11,6 +11,7 @@ import (
 	"github.com/oliverbestmann/webgpu/wgpu"
 
 	"gty/internal/font"
+	"gty/internal/vte"
 )
 
 //go:embed text.wgsl
@@ -47,7 +48,7 @@ type instance struct {
 // label wider than its tab is clipped rather than spilling into the next one.
 type chrome struct {
 	rect  image.Rectangle
-	cells []cell
+	cells []vte.Cell
 	x, y  float32    // the top-left of the first cell, in framebuffer px
 	fg    [4]float32 // one colour for the run
 }
@@ -80,9 +81,9 @@ type text struct {
 	// The chrome runs this pass laid out, drawn ahead of the panes.
 	chrome []chromeGroup
 
-	// Scratch reused across frames: runes for the clipped row, gids for the cursor
-	// row, which is shaped outside the scrollback's cache, and gids for a chrome run,
-	// which has no row to cache into at all.
+	// Scratch reused across frames: runes for the clipped row, gids for the cursor row,
+	// which is shaped outside the row cache, and gids for a chrome run, which has no line
+	// to cache against at all.
 	runes      []rune
 	scratch    []font.GID
 	chromeGids []font.GID
@@ -363,11 +364,11 @@ func (t *text) CellSize() (w, h int) { return t.fm.CellWidth, t.fm.CellHeight }
 //
 // An unwritten cell becomes a space rather than being dropped, so the cells after it
 // still land in their own columns.
-func (t *text) clip(cells []cell, cols int) []rune {
+func (t *text) clip(cells []vte.Cell, cols int) []rune {
 	if len(cells) > cols {
 		cells = cells[:cols]
 	}
-	cells = trimBlanks(cells)
+	cells = vte.TrimBlanks(cells)
 
 	t.runes = t.runes[:0]
 	for _, c := range cells {
@@ -383,7 +384,7 @@ func (t *text) clip(cells []cell, cols int) []rune {
 // plainRow maps each cell straight through cmap. Used when the font broke
 // one-glyph-per-cell somewhere in the row: a per-cell renderer cannot draw that, so the
 // row loses its ligatures rather than rendering garbage.
-func (t *text) plainRow(cells []cell, runes []rune, dst []font.GID) []font.GID {
+func (t *text) plainRow(cells []vte.Cell, runes []rune, dst []font.GID) []font.GID {
 	for i, r := range runes {
 		gid, _ := t.fm.GlyphIndex(styleAt(cells, i), r)
 		dst = append(dst, gid)
@@ -392,15 +393,10 @@ func (t *text) plainRow(cells []cell, runes []rune, dst []font.GID) []font.GID {
 }
 
 // styleAt is the face cell i is drawn in, defaulting past the end of the row.
-func styleAt(cells []cell, i int) font.Style {
-	if i < len(cells) {
-		return cells[i].Style
-	}
-	return font.Regular
-}
+func styleAt(cells []vte.Cell, i int) font.Style { return styleOf(vte.CellAt(cells, i)) }
 
 // shapeRow shapes the row clipped to cols cells, appending to dst.
-func (t *text) shapeRow(cells []cell, cols int, dst []font.GID) []font.GID {
+func (t *text) shapeRow(cells []vte.Cell, cols int, dst []font.GID) []font.GID {
 	return t.shapeRuns(cells, cols, -1, dst)
 }
 
@@ -413,10 +409,10 @@ func (t *text) shapeRow(cells []cell, cols int, dst []font.GID) []font.GID {
 // the earlier ones: a block on the first cell of "=>" would be painted over by the
 // arrow next door, in the same colour, leaving a hole instead of a cursor.
 //
-// The result must not reach the scrollback's cache. The row is only shaped this way
-// while the cursor is on it, and the cached ligated run stays correct for the moment
-// the cursor leaves.
-func (t *text) shapeRowSplit(cells []cell, cols, col int, dst []font.GID) []font.GID {
+// The result must not reach the row cache. The row is only shaped this way while the
+// cursor is on it, and the cached ligated run stays correct for the moment the cursor
+// leaves.
+func (t *text) shapeRowSplit(cells []vte.Cell, cols, col int, dst []font.GID) []font.GID {
 	return t.shapeRuns(cells, cols, col, dst)
 }
 
@@ -426,7 +422,7 @@ func (t *text) shapeRowSplit(cells []cell, cols, col int, dst []font.GID) []font
 // Runs of a single face have to be shaped apart anyway: the shaper is per face, and a
 // ligature spanning a bold boundary could not be drawn from one atlas slot. The cursor
 // is the same mechanism with one more boundary in it.
-func (t *text) shapeRuns(cells []cell, cols, bare int, dst []font.GID) []font.GID {
+func (t *text) shapeRuns(cells []vte.Cell, cols, bare int, dst []font.GID) []font.GID {
 	runes := t.clip(cells, cols)
 	if len(runes) == 0 {
 		return dst
@@ -450,12 +446,11 @@ func (t *text) shapeRuns(cells []cell, cols, bare int, dst []font.GID) []font.GI
 	return dst
 }
 
-// Layout lays each pane's visible window of history onto that pane's own grid and
-// records the pane's slice of the shared instance buffer. Newlines inside a line's
-// text are not handled.
+// Layout lays each pane's frame onto that pane's own grid and records the pane's slice of
+// the shared instance buffer. Newlines inside a line's text are not handled.
 //
-// The grid is the clip: rows past the window are never visited and cells past cols
-// are dropped by shapeRow, so only what shows gets shaped.
+// The frame is already the visible window, and cells past cols are dropped by shapeRow, so
+// only what shows gets shaped.
 //
 // Every cell gets a slot-sized quad offset back by the atlas padding, so a
 // ligature glyph that reaches over its neighbours lands where the font drew it.
@@ -476,8 +471,8 @@ func (t *text) Layout(panes []*pane, focused *pane, runs []chrome) {
 		first := uint32(len(t.instances))
 		t.chromeGids = t.shapeRow(c.cells, len(c.cells), t.chromeGids[:0])
 		for col, gid := range t.chromeGids {
-			cl := cellAt(c.cells, col)
-			k := t.fm.Resolve(cl.Style, gid, cl.Rune)
+			cl := vte.CellAt(c.cells, col)
+			k := t.fm.Resolve(styleOf(cl), gid, cl.Rune)
 			u, v := a.Ensure(k)
 			t.instances = append(t.instances, instance{
 				rect:   [4]float32{c.x + float32(col)*cellW - float32(a.PadLeft), c.y - float32(a.PadTop), slotW, slotH},
@@ -496,42 +491,41 @@ func (t *text) Layout(panes []*pane, focused *pane, runs []chrome) {
 		originX := float32(p.rect.Min.X) + pad
 		originY := float32(p.rect.Min.Y) + pad
 
-		shape := func(cells []cell, dst []font.GID) []font.GID { return t.shapeRow(cells, p.cols, dst) }
-		from, to := p.visible()
+		shape := func(cells []vte.Cell, dst []font.GID) []font.GID { return t.shapeRow(cells, p.cols, dst) }
 
 		// Only a focused pane's block actually covers its glyph, and that is the only
 		// case that has to invert the cell and prise it out of its ligature. An
 		// unfocused pane draws a rim, a bar and an underline sit clear of the ink —
 		// so at most one cell per frame takes the split path.
-		curLine, curCol, hasCursor := p.cursorAt()
-		invert := hasCursor && p == focused && p.cursor.shape == cursorBlock
+		curRow, curCol, hasCursor := p.cursorRow()
+		invert := hasCursor && p == focused && p.frame.Cursor.Shape == vte.CursorBlock
 
 		unfocused := p != focused
 
-		for i := from; i < to; i++ {
-			row, gen := p.rowAt(i)
+		for i := range p.frame.Lines {
+			row := &p.frame.Lines[i]
 			var gids []font.GID
-			if invert && i == curLine {
-				t.scratch = t.shapeRowSplit(row.cells, p.cols, curCol, t.scratch[:0])
+			if invert && i == curRow {
+				t.scratch = t.shapeRowSplit(row.Cells, p.cols, curCol, t.scratch[:0])
 				gids = t.scratch
 			} else {
-				gids = row.shaped(gen, shape)
+				gids = p.cache.shaped(row, shape)
 			}
 
-			y := originY + float32(i-from)*cellH - float32(a.PadTop)
+			y := originY + float32(i)*cellH - float32(a.PadTop)
 			for col, gid := range gids {
-				cl := cellAt(row.cells, col)
+				cl := vte.CellAt(row.Cells, col)
 				// Resolve, not the gid alone: an uncovered rune shapes to 0, and the
 				// chain is where it is drawn from.
-				k := t.fm.Resolve(cl.Style, gid, cl.Rune)
+				k := t.fm.Resolve(styleOf(cl), gid, cl.Rune)
 				u, v := a.Ensure(k)
-				c, _ := cl.colors()
+				c, _ := cellColors(cl)
 				if unfocused {
 					// Dim the ink and leave the paint: brightness is the focus cue, and
 					// darkening a background only makes it look like a hole.
 					c = dim(c)
 				}
-				if invert && i == curLine && col == curCol {
+				if invert && i == curRow && col == curCol {
 					c = backgroundRGBA
 				}
 				t.instances = append(t.instances, instance{

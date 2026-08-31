@@ -19,7 +19,7 @@ import (
 	"github.com/oliverbestmann/webgpu/wgpuglfw"
 
 	"gty/internal/font"
-	"gty/internal/pty"
+	"gty/internal/vte"
 )
 
 // Set from the config file, which is read before the window is built. Defaults here.
@@ -122,7 +122,7 @@ var (
 	cursorTint *[4]float32
 
 	// cursorShapeDefault is what a pane starts with and what DECSCUSR 0 and RIS return to.
-	cursorShapeDefault = cursorBlock
+	cursorShapeDefault = vte.CursorBlock
 
 	// Derived; see refreshTheme.
 	cursorColor [4]float32
@@ -226,10 +226,8 @@ type app struct {
 	dirty       atomic.Bool
 	needsLayout atomic.Bool
 
-	// Reused between frames: the bytes pumpPTY drains, and the painted cell
-	// backgrounds relayout builds.
-	ptyBuf []byte
-	paint  []quad
+	// Reused between frames: the painted cell backgrounds relayout builds.
+	paint []quad
 }
 
 func (a *app) newPane() *pane {
@@ -237,21 +235,38 @@ func (a *app) newPane() *pane {
 	return newPane(a.nextID)
 }
 
-// ensureShell starts a pane's shell, once. It waits for the layout to have given the
-// pane a grid: a shell told it has no terminal to speak of writes its first prompt
-// into nothing, and it will not print it again.
+// ensureShell starts a pane's shell, once. It waits for the layout to have given the pane a
+// grid: a shell told it has no terminal to speak of writes its first prompt into nothing,
+// and it will not print it again.
 func (a *app) ensureShell(p *pane) {
-	if p.pty != nil || p.noShell || p.cols == 0 || p.rows == 0 {
+	if p.noShell || p.cols == 0 || p.rows == 0 {
 		return
 	}
-	s, err := pty.Start(p.cols, p.rows, a.Damage)
-	if err != nil {
+	if err := p.term.Attach(vte.Options{
+		CursorShape: cursorShapeDefault,
+		Wake:        a.Damage,
+		ReportColor: reportThemeColor,
+	}); err != nil {
 		// A pane with no shell still lays out and draws; better than refusing to open.
 		fmt.Fprintln(os.Stderr, "gty:", err)
 		p.noShell = true
-		return
 	}
-	p.pty = s
+}
+
+// reportThemeColor answers the OSC 10 and 11 queries out of the theme. The terminal knows
+// the protocol and the host knows the colours, which is the whole of what it is told.
+func reportThemeColor(code int) (r, g, b uint16, ok bool) {
+	var c [4]float32
+	switch code {
+	case 10:
+		c = foreground
+	case 11:
+		c = backgroundRGBA
+	default:
+		return 0, 0, 0, false
+	}
+	q := func(v float32) uint16 { return uint16(min(max(v, 0), 1) * 0xFFFF) }
+	return q(c[0]), q(c[1]), q(c[2]), true
 }
 
 func main() {
@@ -408,7 +423,7 @@ func blinkOn(since time.Duration, focused bool) bool {
 
 // blinks reports whether the loop has to wake itself to drive the blink.
 func (a *app) blinks() bool {
-	return a.windowFocused && a.focused != nil && a.focused.cursor.on
+	return a.windowFocused && a.focused != nil && a.focused.frame.Cursor.Visible
 }
 
 // untilNextPhase is how long the current blink phase has left to run.
@@ -448,28 +463,23 @@ func (a *app) run() error {
 	return nil
 }
 
-// pumpPTY hands each pane whatever its shell has written since the last frame.
+// pumpPTY parses whatever each pane's shell has written since the last frame.
 //
-// This is the only place a screen is written, and it runs on the main thread: the
-// reader goroutines only move bytes, so nothing in the terminal state needs a lock.
+// This is the only place a terminal is written, and it runs on the main thread: the reader
+// goroutines only move bytes.
 func (a *app) pumpPTY() {
-	// Every tab: a shell whose output nobody drains stops as soon as its pipe buffer
-	// fills, so a build in a background tab would hang rather than finish.
+	// Every tab: a shell whose output nobody drains stops as soon as its pipe buffer fills,
+	// so a build in a background tab would hang rather than finish.
 	for _, t := range a.tabs {
 		for _, p := range t.panes {
-			if p.pty == nil {
-				continue
-			}
-			var err error
-			a.ptyBuf, err = p.pty.Take(a.ptyBuf)
-			if len(a.ptyBuf) > 0 {
-				p.pty.Write(p.feed(a.ptyBuf)) // answers to any queries in this chunk
+			changed, err := p.term.Pump()
+			if changed {
 				a.needsLayout.Store(true)
 				a.dirty.Store(true)
 			}
 			if err != nil {
-				// closePane rebuilds the tree and may drop a whole tab, so stop
-				// walking what this was derived from.
+				// closePane rebuilds the tree and may drop a whole tab, so stop walking
+				// what this was derived from.
 				a.closePane(p)
 				return
 			}
@@ -521,13 +531,13 @@ func (a *app) typed(r rune) {
 	a.toShell([]byte(string(r)))
 }
 
-// toShell writes to the focused pane's shell and snaps its view back to the live
-// screen — a key that reaches the shell means the user wants to see what it does.
+// toShell writes to the focused pane's shell and snaps its view back to the live screen — a
+// key that reaches the shell means the user wants to see what it does.
 func (a *app) toShell(b []byte) {
-	if len(b) == 0 || a.focused.pty == nil {
+	if len(b) == 0 {
 		return
 	}
-	a.focused.pty.Write(b)
+	a.focused.term.Write(b)
 	if a.focused.scroll != 0 {
 		a.focused.scroll = 0
 		a.Damage()
@@ -687,15 +697,20 @@ func (a *app) relayout() {
 	}
 	a.syncActive()
 
-	// A pane's shell starts here rather than at newPane, because only now does the
-	// pane have a grid to tell it about. The cursor is resolved once here too:
-	// text.Layout and the quads below both read cursor.shown, and if they disagreed
-	// the block would vanish while its glyph stayed inverted — a blank cell.
+	// A pane's shell starts here rather than at newPane, because only now does the pane have
+	// a grid to tell it about. Every tab, because a background pane still has to be running.
 	for _, t := range a.tabs {
 		for _, p := range t.panes {
 			a.ensureShell(p)
-			p.cursor.shown = p.cursor.on && (p != a.focused || a.blinkShown)
 		}
+	}
+	// Only the tab on display is drawn, so only its panes need a frame read. Both consumers
+	// below take the same one, and shown is resolved into it here: text.Layout and the quads
+	// both read it, and if they disagreed the block would vanish while its glyph stayed
+	// inverted — a blank cell.
+	for _, p := range a.panes {
+		p.snap()
+		p.shown = p.frame.Cursor.Visible && (p != a.focused || a.blinkShown)
 	}
 	// After the stash, so every tab's focus — and so its label — is current.
 	barFills, barLabels := layoutBar(a.tabs, a.active, bar, cellW, cellH)

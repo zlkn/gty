@@ -5,7 +5,7 @@ import (
 	"image"
 	"slices"
 
-	"gty/internal/font"
+	"gty/internal/vte"
 )
 
 // tab is one layout tree and the focus inside it. Every tab is laid out against the
@@ -99,10 +99,14 @@ func (a *app) tabOf(p *pane) int {
 	return -1
 }
 
-// label is whatever the tab's focused pane last set with OSC 0 or 2, or its number.
+// label is whatever the tab's focused pane last set with OSC 0 or 2, or its number. Read
+// off the terminal rather than a frame: a tab that is not on display is never snapshotted,
+// and its label still has to be drawn.
 func (t *tab) label(i int) string {
-	if t.focused != nil && t.focused.title != "" {
-		return t.focused.title
+	if t.focused != nil {
+		if title := t.focused.term.Title(); title != "" {
+			return title
+		}
 	}
 	return fmt.Sprintf("%d: shell", i+1)
 }
@@ -199,7 +203,7 @@ func layoutBar(tabs []*tab, active int, bar image.Rectangle, cellW, cellH int) (
 		cells := labelCells(t.label(i), budget)
 		if i == active {
 			for j := range cells {
-				cells[j].Style = font.Bold
+				cells[j].Attrs |= vte.AttrBold
 			}
 		}
 
@@ -230,13 +234,13 @@ func labelBudget(tabs []*tab, width, cellW, pad int) int {
 		need += len([]rune(t.label(i)))*cellW + 2*pad
 	}
 	if need <= width {
-		return maxTitle // no label is longer, so nothing is clipped
+		return vte.MaxTitle // no label is longer, so nothing is clipped
 	}
 	return max((width/len(tabs)-2*pad)/cellW, 0)
 }
 
 // labelCells is s clipped to cols, ending in an ellipsis when it did not fit.
-func labelCells(s string, cols int) []cell {
+func labelCells(s string, cols int) []vte.Cell {
 	if cols <= 0 {
 		return nil
 	}
@@ -244,9 +248,9 @@ func labelCells(s string, cols int) []cell {
 	if len(rs) > cols {
 		rs = append(rs[:cols-1:cols-1], '…')
 	}
-	cells := make([]cell, len(rs))
+	cells := make([]vte.Cell, len(rs))
 	for i, r := range rs {
-		cells[i] = cell{Rune: r}
+		cells[i] = vte.Cell{Rune: r}
 	}
 	return cells
 }

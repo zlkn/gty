@@ -1,4 +1,4 @@
-package vt
+package vte
 
 import (
 	"fmt"
@@ -7,33 +7,33 @@ import (
 	"testing"
 )
 
-// recorder is a Sink that remembers everything, so a test can assert what the
+// recorder is a sink that remembers everything, so a test can assert what the
 // automaton recognised as well as what it let through to the screen.
 type recorder struct {
 	printed strings.Builder
 	exec    []byte
-	csi     []string
-	esc     []string
-	osc     []string
+	csis    []string
+	escs    []string
+	oscs    []string
 	lastSub []bool
 }
 
-func (r *recorder) Print(c rune)   { r.printed.WriteRune(c) }
-func (r *recorder) Execute(b byte) { r.exec = append(r.exec, b) }
+func (r *recorder) putRune(c rune) { r.printed.WriteRune(c) }
+func (r *recorder) execute(b byte) { r.exec = append(r.exec, b) }
 
-func (r *recorder) CSIDispatch(c CSI) {
-	r.csi = append(r.csi, fmt.Sprintf("%s%v%s%c", privStr(c.Private), c.Params, c.Inter, c.Final))
+func (r *recorder) csi(c CSI) {
+	r.csis = append(r.csis, fmt.Sprintf("%s%v%s%c", privStr(c.Private), c.Params, c.Inter, c.Final))
 	r.lastSub = r.lastSub[:0]
 	for i := range c.Params {
 		r.lastSub = append(r.lastSub, c.Sub(i))
 	}
 }
 
-func (r *recorder) ESCDispatch(final byte, inter []byte) {
-	r.esc = append(r.esc, fmt.Sprintf("%s%c", inter, final))
+func (r *recorder) esc(final byte, inter []byte) {
+	r.escs = append(r.escs, fmt.Sprintf("%s%c", inter, final))
 }
 
-func (r *recorder) OSCDispatch(data []byte) { r.osc = append(r.osc, string(data)) }
+func (r *recorder) osc(data []byte) { r.oscs = append(r.oscs, string(data)) }
 
 func privStr(p byte) string {
 	if p == 0 {
@@ -44,8 +44,8 @@ func privStr(p byte) string {
 
 func run(input string) *recorder {
 	r := &recorder{}
-	var p Parser
-	p.Parse([]byte(input), r)
+	var p parser
+	p.parse([]byte(input), r)
 	return r
 }
 
@@ -54,8 +54,8 @@ func TestParserPrintsPlainText(t *testing.T) {
 	if got := r.printed.String(); got != "hello, world" {
 		t.Errorf("printed %q, want %q", got, "hello, world")
 	}
-	if len(r.csi)+len(r.esc)+len(r.osc) != 0 {
-		t.Errorf("plain text produced sequences: csi=%v esc=%v osc=%v", r.csi, r.esc, r.osc)
+	if len(r.csis)+len(r.escs)+len(r.oscs) != 0 {
+		t.Errorf("plain text produced sequences: csi=%v esc=%v osc=%v", r.csis, r.escs, r.oscs)
 	}
 }
 
@@ -68,8 +68,8 @@ func TestParserSwallowsSGR(t *testing.T) {
 	if got := r.printed.String(); got != "red" {
 		t.Errorf("printed %q, want %q — escape bytes leaked", got, "red")
 	}
-	if want := []string{"[31]m", "[0]m"}; !slices.Equal(r.csi, want) {
-		t.Errorf("recognised %v, want %v", r.csi, want)
+	if want := []string{"[31]m", "[0]m"}; !slices.Equal(r.csis, want) {
+		t.Errorf("recognised %v, want %v", r.csis, want)
 	}
 }
 
@@ -88,8 +88,8 @@ func TestParserCSIForms(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := run(tc.in)
-			if !slices.Equal(r.csi, tc.want) {
-				t.Errorf("%q recognised as %v, want %v", tc.in, r.csi, tc.want)
+			if !slices.Equal(r.csis, tc.want) {
+				t.Errorf("%q recognised as %v, want %v", tc.in, r.csis, tc.want)
 			}
 			if got := r.printed.String(); got != "" {
 				t.Errorf("%q printed %q, want nothing", tc.in, got)
@@ -102,14 +102,14 @@ func TestParserCSIForms(t *testing.T) {
 // separator tells 38;2;r;g;b from the colon form — so the parser has to keep it.
 func TestParserKeepsSubParameters(t *testing.T) {
 	r := &recorder{}
-	var p Parser
-	p.Parse([]byte("\x1b[38:2::255:0:0mX"), r)
+	var p parser
+	p.parse([]byte("\x1b[38:2::255:0:0mX"), r)
 
 	if got := r.printed.String(); got != "X" {
 		t.Errorf("printed %q, want %q", got, "X")
 	}
-	if want := []string{"[38 2 0 255 0 0]m"}; !slices.Equal(r.csi, want) {
-		t.Errorf("recognised %v, want %v", r.csi, want)
+	if want := []string{"[38 2 0 255 0 0]m"}; !slices.Equal(r.csis, want) {
+		t.Errorf("recognised %v, want %v", r.csis, want)
 	}
 	if want := []bool{false, true, true, true, true, true}; !slices.Equal(r.lastSub, want) {
 		t.Errorf("separators recorded as %v, want %v", r.lastSub, want)
@@ -118,8 +118,8 @@ func TestParserKeepsSubParameters(t *testing.T) {
 	// The semicolon form is the same numbers with different separators, which is the
 	// whole reason the parser has to keep them.
 	r = &recorder{}
-	p = Parser{}
-	p.Parse([]byte("\x1b[38;2;255;0;0m"), r)
+	p = parser{}
+	p.parse([]byte("\x1b[38;2;255;0;0m"), r)
 	if want := []bool{false, false, false, false, false}; !slices.Equal(r.lastSub, want) {
 		t.Errorf("semicolon form recorded as %v, want %v", r.lastSub, want)
 	}
@@ -132,8 +132,8 @@ func TestParserOSC(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := run(tc.in + "after")
-			if want := []string{"0;a title"}; !slices.Equal(r.osc, want) {
-				t.Errorf("osc %v, want %v", r.osc, want)
+			if want := []string{"0;a title"}; !slices.Equal(r.oscs, want) {
+				t.Errorf("osc %v, want %v", r.oscs, want)
 			}
 			if got := r.printed.String(); got != "after" {
 				t.Errorf("printed %q, want %q", got, "after")
@@ -157,16 +157,16 @@ func TestParserExecutesC0(t *testing.T) {
 // automaton has to carry its state across the seam.
 func TestParserSurvivesSplitInput(t *testing.T) {
 	r := &recorder{}
-	var p Parser
+	var p parser
 	for _, chunk := range []string{"ab\x1b", "[3", "1m", "cd", "\xd0", "\xbf"} {
-		p.Parse([]byte(chunk), r)
+		p.parse([]byte(chunk), r)
 	}
 
 	if got, want := r.printed.String(), "abcdп"; got != want {
 		t.Errorf("printed %q, want %q", got, want)
 	}
-	if want := []string{"[31]m"}; !slices.Equal(r.csi, want) {
-		t.Errorf("recognised %v, want %v", r.csi, want)
+	if want := []string{"[31]m"}; !slices.Equal(r.csis, want) {
+		t.Errorf("recognised %v, want %v", r.csis, want)
 	}
 }
 
@@ -185,8 +185,8 @@ func TestParserCancelAbandonsSequence(t *testing.T) {
 	if got := r.printed.String(); got != "m" {
 		t.Errorf("printed %q, want %q", got, "m")
 	}
-	if len(r.csi) != 0 {
-		t.Errorf("recognised %v, want the cancelled sequence dropped", r.csi)
+	if len(r.csis) != 0 {
+		t.Errorf("recognised %v, want the cancelled sequence dropped", r.csis)
 	}
 }
 
@@ -209,10 +209,10 @@ func TestParserRealPrompt(t *testing.T) {
 	}
 	// The payload arrives whole, command number included: splitting it is the OSC
 	// handler's job, not the automaton's.
-	if want := []string{"0;user@host: ~"}; !slices.Equal(r.osc, want) {
-		t.Errorf("osc %v, want %v", r.osc, want)
+	if want := []string{"0;user@host: ~"}; !slices.Equal(r.oscs, want) {
+		t.Errorf("osc %v, want %v", r.oscs, want)
 	}
-	if len(r.csi) != 4 {
-		t.Errorf("recognised %v, want four colour sequences", r.csi)
+	if len(r.csis) != 4 {
+		t.Errorf("recognised %v, want four colour sequences", r.csis)
 	}
 }

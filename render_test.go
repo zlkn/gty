@@ -12,6 +12,7 @@ import (
 	"github.com/oliverbestmann/webgpu/wgpu"
 
 	"gty/internal/font"
+	"gty/internal/vte"
 )
 
 const (
@@ -288,23 +289,20 @@ func TestCursorSplitsLigature(t *testing.T) {
 	}
 }
 
-// TestCursorSplitLeavesTheCacheLigated: the split runs outside the scrollback's cache
-// on purpose, so the row is whole again the moment the cursor moves off it.
+// TestCursorSplitLeavesTheCacheLigated: the split runs outside the row cache on purpose, so
+// the row is whole again the moment the cursor moves off it.
 func TestCursorSplitLeavesTheCacheLigated(t *testing.T) {
 	device, queue := newTestGPU(t)
 	txt := newTestText(t, device, queue)
 
 	p := gridPane(1, image.Rect(0, 0, 200, 100), 4, 1, "a=>b")
-	shape := func(cells []cell, dst []font.GID) []font.GID { return txt.shapeRow(cells, p.cols, dst) }
-	row, gen := p.rowAt(0)
-	want := slices.Clone(row.shaped(gen, shape))
+	shape := func(cells []vte.Cell, dst []font.GID) []font.GID { return txt.shapeRow(cells, p.cols, dst) }
+	want := slices.Clone(p.cache.shaped(&p.frame.Lines[0], shape))
 
-	p.cursor.shown = true
-	p.scr.curCol = 1
-	txt.Layout([]*pane{p}, p, nil)
+	placeCursor(p, 0, 1)
+	layout(txt, []*pane{p}, p, nil)
 
-	row, gen = p.rowAt(0)
-	if got := row.shaped(gen, shape); !slices.Equal(got, want) {
+	if got := p.cache.shaped(&p.frame.Lines[0], shape); !slices.Equal(got, want) {
 		t.Errorf("a frame with the cursor on the ligature left %v in the cache, want the ligated %v", got, want)
 	}
 }
@@ -316,7 +314,7 @@ func TestBoxDrawingSkipsTheCoverageBend(t *testing.T) {
 	txt := newTestText(t, device, queue)
 
 	p := gridPane(1, image.Rect(0, 0, 400, 100), 6, 1, "╭──╮ab")
-	txt.Layout([]*pane{p}, p, nil)
+	layout(txt, []*pane{p}, p, nil)
 	if p.count != 6 {
 		t.Fatalf("laid out %d quads for six cells; the indices below would not line up", p.count)
 	}
@@ -337,10 +335,9 @@ func TestCursorInvertsTheCellGlyph(t *testing.T) {
 	txt := newTestText(t, device, queue)
 
 	p := gridPane(1, image.Rect(0, 0, 400, 100), 10, 1, "abcdefghij")
-	p.cursor.shown = true
-	p.scr.curRow, p.scr.curCol = 0, 2
+	placeCursor(p, 0, 2)
 
-	txt.Layout([]*pane{p}, p, nil)
+	layout(txt, []*pane{p}, p, nil)
 	if p.count != 10 {
 		t.Fatalf("laid out %d quads for ten cells; the indices below would not line up", p.count)
 	}
@@ -354,7 +351,7 @@ func TestCursorInvertsTheCellGlyph(t *testing.T) {
 	// An unfocused pane draws a rim instead of a fill, so nothing is covered and
 	// nothing may be inverted.
 	other := gridPane(2, image.Rect(400, 0, 800, 100), 10, 1, "abcdefghij")
-	txt.Layout([]*pane{p, other}, other, nil)
+	layout(txt, []*pane{p, other}, other, nil)
 	if got := txt.instances[2].color; got != dim(foreground) {
 		t.Errorf("an unfocused pane inverted its cursor cell to %v, want the dimmed %v", got, dim(foreground))
 	}
@@ -378,12 +375,11 @@ func TestCursorRendersFilledAndHollow(t *testing.T) {
 	const row = "MM MMMMM"
 	focused := gridPane(1, image.Rect(0, 0, testWidth/2, 200), 8, 1, row)
 	unfocused := gridPane(2, image.Rect(testWidth/2, 0, testWidth, 200), 8, 1, row)
-	focused.cursor.shown, unfocused.cursor.shown = true, true
-	focused.scr.curRow, focused.scr.curCol = 0, 1     // on an 'M'
-	unfocused.scr.curRow, unfocused.scr.curCol = 0, 2 // on the space
+	placeCursor(focused, 0, 1)   // on an 'M'
+	placeCursor(unfocused, 0, 2) // on the space
 	panes := []*pane{focused, unfocused}
 
-	txt.Layout(panes, focused, nil)
+	layout(txt, panes, focused, nil)
 	fills, rims := cursorRects(panes, focused, cellW, cellH)
 	rct.Reset()
 	rct.Add(fills, cursorColor)
@@ -438,7 +434,7 @@ func TestRenderToPNG(t *testing.T) {
 	t.Cleanup(rct.release)
 
 	panes, dividers := splitLayout(t, txt, testWidth, testHeight)
-	txt.Layout(panes, panes[0], nil)
+	layout(txt, panes, panes[0], nil)
 	rct.Set(dividers, selectionColor)
 
 	a := txt.fm.Atlas
@@ -518,7 +514,7 @@ func TestPaneContentIsIndependent(t *testing.T) {
 	left := gridPane(1, image.Rect(0, 0, 300, 400), 40, 20, row)
 	right := gridPane(2, image.Rect(300, 0, 600, 400), 40, 20, long...)
 
-	txt.Layout([]*pane{left, right}, left, nil)
+	layout(txt, []*pane{left, right}, left, nil)
 
 	if want := uint32(len(row)); left.count != want {
 		t.Errorf("left pane laid out %d quads, want %d", left.count, want)
@@ -536,7 +532,7 @@ func TestScreenWrapsRatherThanClips(t *testing.T) {
 	txt := newTestText(t, device, queue)
 
 	p := gridPane(1, image.Rect(0, 0, 200, 300), 10, 5, strings.Repeat("=", 25))
-	txt.Layout([]*pane{p}, p, nil)
+	layout(txt, []*pane{p}, p, nil)
 
 	if got, want := viewText(p)[:3], []string{"==========", "==========", "====="}; !slices.Equal(got, want) {
 		t.Errorf("the wrapped line reads %q, want %q", got, want)
@@ -553,16 +549,16 @@ func TestHistoryClipsToPaneColumns(t *testing.T) {
 	txt := newTestText(t, device, queue)
 
 	p := gridPane(1, image.Rect(0, 0, 400, 100), 30, 1, strings.Repeat("=", 30), "next")
-	if p.buf.Len() == 0 {
+	if p.frame.HistLen == 0 {
 		t.Fatal("nothing reached the history; the fixture proves nothing")
 	}
-	if got := len(p.buf.Row(0).cells); got != 30 {
+	if got := len(p.term.GetViewport(0, 1)[0].Cells); got != 30 {
 		t.Fatalf("the history row holds %d cells, want the 30 it was written at", got)
 	}
 
 	p.setGrid(10, 1)
 	p.scrollBy(1) // back onto the wide history row
-	txt.Layout([]*pane{p}, p, nil)
+	layout(txt, []*pane{p}, p, nil)
 
 	if p.count != 10 {
 		t.Errorf("a 30-cell history row in a 10-column pane laid out %d quads, want 10", p.count)
@@ -578,16 +574,16 @@ func TestScrollRendersDifferentLines(t *testing.T) {
 	p, _ := scrollPane(txt)
 	draw := func(pass *wgpu.RenderPassEncoder) { txt.Draw(pass, []*pane{p}, testWidth, testHeight) }
 
-	txt.Layout([]*pane{p}, p, nil)
+	layout(txt, []*pane{p}, p, nil)
 	if int(p.count) > p.cols*p.rows {
-		t.Errorf("a %dx%d pane over %d lines laid out %d quads", p.cols, p.rows, p.buf.Len(), p.count)
+		t.Errorf("a %dx%d pane over %d lines laid out %d quads", p.cols, p.rows, p.frame.HistLen, p.count)
 	}
 	tail := renderOffscreen(t, device, queue, draw)
 
 	if !p.scrollBy(20) {
 		t.Fatal("a full history did not scroll")
 	}
-	txt.Layout([]*pane{p}, p, nil)
+	layout(txt, []*pane{p}, p, nil)
 	back := renderOffscreen(t, device, queue, draw)
 
 	if bytes.Equal(tail.Pix, back.Pix) {
@@ -611,28 +607,26 @@ func BenchmarkScrollLayout(b *testing.B) {
 	device, queue := newTestGPU(b)
 	txt := newTestText(b, device, queue)
 	p, panes := scrollPane(txt)
-	txt.Layout(panes, p, nil)
+	layout(txt, panes, p, nil)
 
 	for b.Loop() {
 		if !p.scrollBy(wheelLines) {
 			p.scroll = 0
 		}
-		txt.Layout(panes, p, nil)
+		layout(txt, panes, p, nil)
 	}
 }
 
-// BenchmarkScrollLayoutCold reshapes the whole screen every notch — what scrolling
-// would cost without the cache in the scrollback.
+// BenchmarkScrollLayoutCold reshapes the whole screen every frame — what a frame would cost
+// without the row cache.
 func BenchmarkScrollLayoutCold(b *testing.B) {
 	device, queue := newTestGPU(b)
 	txt := newTestText(b, device, queue)
 	p, panes := scrollPane(txt)
 
 	for b.Loop() {
-		// Two width changes leave cols where it was and every cached row stale.
-		p.buf.setCols(p.cols + 1)
-		p.buf.setCols(p.cols)
-		txt.Layout(panes, p, nil)
+		p.cache.reset() // every cached row stale, as a width change would leave them
+		layout(txt, panes, p, nil)
 	}
 }
 
@@ -652,7 +646,7 @@ func TestLayoutGrowsVertexBuffer(t *testing.T) {
 	}
 	p := gridPane(1, image.Rect(0, 0, testWidth, testHeight), cols, rows, lines...)
 
-	txt.Layout([]*pane{p}, p, nil)
+	layout(txt, []*pane{p}, p, nil)
 
 	if want := uint32(rows * cols); p.count != want {
 		t.Fatalf("laid out %d quads, want %d — none may be dropped", p.count, want)
@@ -684,7 +678,7 @@ func TestNonASCIIRenders(t *testing.T) {
 
 	const line = "привет ┌─┐ héllo"
 	p := gridPane(1, image.Rect(0, 0, testWidth, 200), 40, 2, line)
-	txt.Layout([]*pane{p}, p, nil)
+	layout(txt, []*pane{p}, p, nil)
 
 	if want := uint32(len([]rune(line))); p.count != want {
 		t.Fatalf("laid out %d quads for %d runes", p.count, want)
@@ -722,7 +716,7 @@ func TestMissingGlyphDrawsABox(t *testing.T) {
 		t.Skip("the embedded face has Nerd Font icons after all")
 	}
 	p := gridPane(1, image.Rect(0, 0, testWidth, 200), 40, 2, "a\U000f10feb")
-	txt.Layout([]*pane{p}, p, nil)
+	layout(txt, []*pane{p}, p, nil)
 
 	if p.count != 3 {
 		t.Fatalf("laid out %d quads for three cells", p.count)
@@ -782,7 +776,7 @@ func TestCoverageGammaLeavesIconsAlone(t *testing.T) {
 
 	// Two cells of room after the icon: it is scaled to the line's height and overhangs.
 	p := gridPane(1, image.Rect(0, 0, testWidth, 200), 12, 1, "\U0000F015   eaosw")
-	txt.Layout([]*pane{p}, p, nil)
+	layout(txt, []*pane{p}, p, nil)
 	render := func(exp float32) *image.RGBA {
 		was := coverageExp
 		coverageExp = exp
@@ -817,7 +811,7 @@ func TestCoverageGammaThickensOnlyTheEdges(t *testing.T) {
 
 	// Letters with plenty of edge: round sides and diagonals, not just uprights.
 	p := gridPane(1, image.Rect(0, 0, testWidth, 200), 8, 1, "eaoswzgm")
-	txt.Layout([]*pane{p}, p, nil)
+	layout(txt, []*pane{p}, p, nil)
 	render := func(exp float32) *image.RGBA {
 		was := coverageExp
 		coverageExp = exp
@@ -858,7 +852,8 @@ func TestTabBarRenders(t *testing.T) {
 	cellW, cellH := txt.CellSize()
 	surface := image.Rect(0, 0, testWidth, testHeight)
 	tabs := []*tab{tabOf1(1), tabOf1(2)}
-	tabs[0].focused.title, tabs[1].focused.title = "fish", "htop"
+	setTitle(tabs[0].focused, "fish")
+	setTitle(tabs[1].focused, "htop")
 
 	bar, content := splitBar(surface, len(tabs), cellH)
 	if bar.Empty() {
@@ -872,7 +867,7 @@ func TestTabBarRenders(t *testing.T) {
 	const active = 1
 	fills, labels := layoutBar(tabs, active, bar, cellW, cellH)
 	panes := tabs[active].panes
-	txt.Layout(panes, panes[0], labels)
+	layout(txt, panes, panes[0], labels)
 	rct.Reset()
 	rct.AddQuads(fills)
 	rct.Upload()
@@ -976,7 +971,7 @@ func TestBlendSpaceKeepsColourSaturated(t *testing.T) {
 		txt := newTestTextIn(t, device, queue, format)
 		p := gridPane(1, image.Rect(0, 0, testWidth, testHeight), 40, 8,
 			"\x1b[38;2;0;116;116mMMMM")
-		txt.Layout([]*pane{p}, p, nil)
+		layout(txt, []*pane{p}, p, nil)
 		return renderOffscreenTo(t, device, queue, format, func(pass *wgpu.RenderPassEncoder) {
 			txt.Draw(pass, []*pane{p}, testWidth, testHeight)
 		})

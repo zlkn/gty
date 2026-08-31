@@ -1,4 +1,4 @@
-package pty
+package vte
 
 import (
 	"fmt"
@@ -9,33 +9,33 @@ import (
 	creack "github.com/creack/pty"
 )
 
-// Only pump reads the file, buffering raw bytes into pend and waking the event loop.
-// Confining parsing and screen updates to the main thread keeps terminal state lock-free.
-type Session struct {
+// pty is the child process and the master side of its terminal. Only pump reads the
+// file, buffering raw bytes into pend; parsing them happens wherever the host calls Pump.
+type pty struct {
 	cmd *exec.Cmd
 	f   *os.File
 
 	mu   sync.Mutex
 	pend []byte
-	err  error // EOF or a read failure; the pane closes on it
+	err  error // EOF or a read failure; the terminal is finished once it surfaces
 }
 
-func Start(cols, rows int, wake func()) (*Session, error) {
+func startShell(cols, rows int, wake func()) (*pty, error) {
 	sh := os.Getenv("SHELL")
 	if sh == "" {
 		sh = "/bin/sh"
 	}
 	cmd := exec.Command(sh)
 	cmd.Env = append(os.Environ(), "TERM=xterm-256color", "COLORTERM=truecolor")
-	return StartCommand(cmd, cols, rows, wake)
+	return startPTY(cmd, cols, rows, wake)
 }
 
-func StartCommand(cmd *exec.Cmd, cols, rows int, wake func()) (*Session, error) {
+func startPTY(cmd *exec.Cmd, cols, rows int, wake func()) (*pty, error) {
 	f, err := creack.StartWithSize(cmd, winsize(cols, rows))
 	if err != nil {
 		return nil, fmt.Errorf("start %s: %w", cmd.Path, err)
 	}
-	s := &Session{cmd: cmd, f: f}
+	s := &pty{cmd: cmd, f: f}
 	go s.pump(wake)
 	return s, nil
 }
@@ -44,7 +44,7 @@ func winsize(cols, rows int) *creack.Winsize {
 	return &creack.Winsize{Cols: uint16(max(cols, 1)), Rows: uint16(max(rows, 1))}
 }
 
-func (s *Session) pump(wake func()) {
+func (s *pty) pump(wake func()) {
 	buf := make([]byte, 32*1024)
 	for {
 		n, err := s.f.Read(buf)
@@ -63,10 +63,9 @@ func (s *Session) pump(wake func()) {
 	}
 }
 
-// Take moves everything read since the last call into dst, and reports whether the
-// shell is gone. dst is reused between calls so a busy pane does not allocate a buffer
-// per frame.
-func (s *Session) Take(dst []byte) ([]byte, error) {
+// take moves everything read since the last call into dst and reports whether the shell is
+// gone. dst is reused, so a busy terminal does not allocate a buffer per frame.
+func (s *pty) take(dst []byte) ([]byte, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	dst = append(dst[:0], s.pend...)
@@ -74,9 +73,9 @@ func (s *Session) Take(dst []byte) ([]byte, error) {
 	return dst, s.err
 }
 
-func (s *Session) Resize(cols, rows int) { _ = creack.Setsize(s.f, winsize(cols, rows)) }
+func (s *pty) resize(cols, rows int) { _ = creack.Setsize(s.f, winsize(cols, rows)) }
 
-func (s *Session) Write(b []byte) {
+func (s *pty) write(b []byte) {
 	if len(b) > 0 {
 		_, _ = s.f.Write(b)
 	}
@@ -84,7 +83,7 @@ func (s *Session) Write(b []byte) {
 
 // Closing the master hangs up on the child, and the Wait reaps it, so a long session of
 // splits does not leave zombies.
-func (s *Session) Close() {
+func (s *pty) close() {
 	s.f.Close()
 	if s.cmd.Process != nil {
 		_ = s.cmd.Process.Kill()

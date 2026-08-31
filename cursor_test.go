@@ -4,53 +4,75 @@ import (
 	"image"
 	"testing"
 	"time"
+
+	"gty/internal/vte"
 )
 
 // cursorPane is a pane placed and gridded the way a layout pass would leave it, with
 // enough output behind it that the history is not empty.
 func cursorPane(rect image.Rectangle, cols, rows, lines int) *pane {
-	p := gridPane(1, rect, cols, rows, numbered(0, lines)...)
-	p.cursor.shown = true
-	return p
+	return gridPane(1, rect, cols, rows, numbered(0, lines)...)
 }
 
-// TestCursorAtRidesTheScreen: the cursor lives on the live screen, so its place in the
-// view is the history's length plus its screen row — and new output does not move it.
-func TestCursorAtRidesTheScreen(t *testing.T) {
+// TestCursorRowRidesTheScreen: the cursor lives on the live screen, so while the view is
+// pinned its row in the window is its row on the screen — and new output does not move it.
+func TestCursorRowRidesTheScreen(t *testing.T) {
 	p := cursorPane(image.Rect(0, 0, 400, 300), 20, 10, 100)
 
-	line, col, ok := p.cursorAt()
-	if want := p.buf.Len() + p.scr.curRow; !ok || line != want || col != p.scr.curCol {
-		t.Fatalf("cursorAt = (%d, %d, %v), want (%d, %d, true)", line, col, ok, want, p.scr.curCol)
+	row, col, ok := p.cursorRow()
+	if c := p.frame.Cursor; !ok || row != c.Row || col != c.Col {
+		t.Fatalf("cursorRow = (%d, %d, %v), want (%d, %d, true)", row, col, ok, c.Row, c.Col)
 	}
 
 	feedText(p, "", "more output")
-	if line, _, ok := p.cursorAt(); !ok || line != p.buf.Len()+p.scr.curRow {
-		t.Errorf("after more output the cursor is at %d (ok=%v), want %d", line, ok, p.buf.Len()+p.scr.curRow)
+	row, _, ok = p.cursorRow()
+	if !ok || row != p.frame.Cursor.Row {
+		t.Errorf("after more output the cursor is on row %d (ok=%v), want %d", row, ok, p.frame.Cursor.Row)
 	}
-
-	// Wherever it is, it is on screen: that is the whole point of a live grid.
-	from, to := p.visible()
-	if line, _, _ := p.cursorAt(); line < from || line >= to {
-		t.Errorf("cursor at %d is outside the visible window [%d,%d)", line, from, to)
+	// Wherever it is, it is in the window: that is the whole point of a live grid.
+	if row < 0 || row >= len(p.frame.Lines) {
+		t.Errorf("cursor on row %d is outside the %d-line window", row, len(p.frame.Lines))
 	}
 }
 
-func TestCursorAtHidden(t *testing.T) {
+// TestCursorRowFollowsAScrolledView: scrolling back does not move the cursor on the screen,
+// it moves the window — so the cursor slides down the window and eventually out of it.
+func TestCursorRowFollowsAScrolledView(t *testing.T) {
+	p := cursorPane(image.Rect(0, 0, 400, 300), 20, 10, 100)
+	// Off the bottom row, or the first line scrolled back would already take it out of view.
+	placeCursor(p, 2, 0)
+	onScreen := p.frame.Cursor.Row
+
+	p.scrollBy(3)
+	p.snap()
+	if row, _, ok := p.cursorRow(); !ok || row != onScreen+3 {
+		t.Errorf("scrolled 3 back the cursor is on row %d (ok=%v), want %d", row, ok, onScreen+3)
+	}
+
+	p.scrollBy(20)
+	p.snap()
+	if _, _, ok := p.cursorRow(); ok {
+		t.Error("the cursor is still reported after the view scrolled past it")
+	}
+}
+
+func TestCursorRowHidden(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		set  func(p *pane)
 	}{
-		{"not shown", func(p *pane) { p.cursor.shown = false }},
-		{"column past the grid", func(p *pane) { p.scr.curCol = p.cols }},
-		{"pane with no rows", func(p *pane) { p.setGrid(20, 0) }},
-		{"scrolled back into the history", func(p *pane) { p.scrollBy(20) }},
+		{"not shown", func(p *pane) { p.shown = false }},
+		// A grid narrower than the terminal's is what a view looks like for the frame
+		// between a resize and the terminal hearing about it.
+		{"column past the grid", func(p *pane) { p.cols = 1 }},
+		{"pane with no rows", func(p *pane) { p.setGrid(20, 0); p.snap() }},
+		{"scrolled back into the history", func(p *pane) { p.scrollBy(20); p.snap() }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			p := cursorPane(image.Rect(0, 0, 400, 300), 20, 10, 100)
 			tc.set(p)
-			if _, _, ok := p.cursorAt(); ok {
-				t.Error("cursorAt reports a visible cursor")
+			if _, _, ok := p.cursorRow(); ok {
+				t.Error("cursorRow reports a visible cursor")
 			}
 		})
 	}
@@ -60,7 +82,7 @@ func TestCursorAtHidden(t *testing.T) {
 // glyphs from, before it backs off by the atlas padding.
 func TestCursorCellMatchesTheGlyphGrid(t *testing.T) {
 	p := cursorPane(image.Rect(100, 50, 500, 350), 20, 10, 100)
-	p.scr.curRow, p.scr.curCol = 7, 3
+	placeCursor(p, 7, 3)
 
 	cell, ok := p.cursorCell(testCellW, testCellH)
 	if !ok {
@@ -84,7 +106,7 @@ func TestCursorCellStaysInsidePane(t *testing.T) {
 
 	for _, tc := range []struct{ row, col int }{{0, 0}, {0, cols - 1}, {rows - 1, cols - 1}} {
 		p := cursorPane(full, cols, rows, 100)
-		p.scr.curRow, p.scr.curCol = tc.row, tc.col
+		placeCursor(p, tc.row, tc.col)
 
 		cell, ok := p.cursorCell(testCellW, testCellH)
 		if !ok {
@@ -99,7 +121,7 @@ func TestCursorCellStaysInsidePane(t *testing.T) {
 func TestCursorQuads(t *testing.T) {
 	cell := image.Rect(10, 20, 10+testCellW, 20+testCellH)
 
-	for _, shape := range []cursorShape{cursorBlock, cursorBar, cursorUnderline} {
+	for _, shape := range []vte.CursorShape{vte.CursorBlock, vte.CursorBar, vte.CursorUnderline} {
 		for _, q := range cursorQuads(cell, shape) {
 			if q.Empty() {
 				t.Errorf("shape %d produced an empty quad", shape)
@@ -110,13 +132,13 @@ func TestCursorQuads(t *testing.T) {
 		}
 	}
 
-	if got := cursorQuads(cell, cursorBlock); len(got) != 1 || got[0] != cell {
+	if got := cursorQuads(cell, vte.CursorBlock); len(got) != 1 || got[0] != cell {
 		t.Errorf("block is %v, want the whole cell %v", got, cell)
 	}
-	if got := cursorQuads(cell, cursorBar)[0]; got.Min != cell.Min || got.Dx() != cursorBarWidth || got.Dy() != cell.Dy() {
+	if got := cursorQuads(cell, vte.CursorBar)[0]; got.Min != cell.Min || got.Dx() != cursorBarWidth || got.Dy() != cell.Dy() {
 		t.Errorf("bar is %v, want a %d px column down the left of %v", got, cursorBarWidth, cell)
 	}
-	if got := cursorQuads(cell, cursorUnderline)[0]; got.Max != cell.Max || got.Dy() != cursorUnderlineHeight || got.Dx() != cell.Dx() {
+	if got := cursorQuads(cell, vte.CursorUnderline)[0]; got.Max != cell.Max || got.Dy() != cursorUnderlineHeight || got.Dx() != cell.Dx() {
 		t.Errorf("underline is %v, want a %d px row along the bottom of %v", got, cursorUnderlineHeight, cell)
 	}
 }
@@ -176,7 +198,7 @@ func TestCursorRectsSplitsByFocus(t *testing.T) {
 	}
 
 	// A hidden cursor contributes nothing at all.
-	right.cursor.on, right.cursor.shown = false, false
+	right.shown = false
 	if _, rims := cursorRects([]*pane{left, right}, left, testCellW, testCellH); len(rims) != 0 {
 		t.Errorf("a hidden cursor still drew %d quads", len(rims))
 	}
@@ -217,7 +239,7 @@ func TestCursorScaled(t *testing.T) {
 	withScale(t, 2)
 
 	p := cursorPane(image.Rect(100, 50, 500, 350), 20, 10, 100)
-	p.scr.curRow, p.scr.curCol = 7, 3
+	placeCursor(p, 7, 3)
 
 	cell, ok := p.cursorCell(testCellW, testCellH)
 	if !ok {
@@ -230,7 +252,7 @@ func TestCursorScaled(t *testing.T) {
 		t.Errorf("cell is %v, want %v", cell, want)
 	}
 
-	if got := cursorQuads(cell, cursorBar)[0]; got.Dx() != 2*cursorBarWidth {
+	if got := cursorQuads(cell, vte.CursorBar)[0]; got.Dx() != 2*cursorBarWidth {
 		t.Errorf("bar is %d px wide, want %d", got.Dx(), 2*cursorBarWidth)
 	}
 	if got := cursorOutline(cell)[0]; got.Dy() != 2*cursorOutlineWidth {

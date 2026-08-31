@@ -1,39 +1,15 @@
 package main
 
-// color is a packed terminal colour: a kind in the top byte and its argument below, so
-// the zero value is "whatever the theme calls default" and a cleared cell costs no
-// initialising.
-type color uint32
+import "gty/internal/vte"
 
-const (
-	kindDefault = iota
-	kindPalette
-	kindRGB
-
-	kindShift = 24
-
-	colorDefault color = kindDefault << kindShift
-)
-
-func paletteColor(i int) color { return kindPalette<<kindShift | color(i&0xFF) }
-
-func rgbColor(r, g, b int) color {
-	return kindRGB<<kindShift | color(uint8(r))<<16 | color(uint8(g))<<8 | color(uint8(b))
-}
-
-// resolve turns a packed colour into what the renderer wants. dflt is the theme's own
-// foreground or background, which is what a default cell is asking for.
-func (c color) resolve(dflt [4]float32) [4]float32 {
-	switch c >> kindShift {
-	case kindPalette:
-		return palette[c&0xFF]
-	case kindRGB:
-		return [4]float32{
-			float32(c>>16&0xFF) / 255,
-			float32(c>>8&0xFF) / 255,
-			float32(c&0xFF) / 255,
-			1,
-		}
+// resolveColor turns a packed terminal colour into what the renderer wants. dflt is the
+// theme's own foreground or background, which is what a default cell is asking for.
+func resolveColor(c vte.Color, dflt [4]float32) [4]float32 {
+	if i, ok := c.Palette(); ok {
+		return palette[i]
+	}
+	if r, g, b, ok := c.RGB(); ok {
+		return [4]float32{float32(r) / 255, float32(g) / 255, float32(b) / 255, 1}
 	}
 	return dflt
 }

@@ -1,4 +1,4 @@
-package main
+package vte
 
 // tabWidth is the fixed tab stop. Real terminals move them with HTS and TBC; nothing
 // gty talks to has asked yet.
@@ -7,18 +7,16 @@ const tabWidth = 8
 // savedCursor is what DECSC keeps and DECRC puts back.
 type savedCursor struct {
 	row, col int
-	pen      cell
+	pen      Cell
 	autowrap bool
 }
 
-// screen is the addressable grid a PTY writes to — the terminal's live view, as
-// distinct from the history behind it. The cursor goes wherever the escape codes send
-// it, and a line leaves for the scrollback only when the screen scrolls.
+// screen is the addressable grid a shell writes to, as distinct from the history behind it: a
+// line leaves for the scrollback only when the screen scrolls.
 //
-// out is nil on the alternate screen: nothing scrolls off it, because a full-screen
-// program owns the grid and its repaints are not history.
+// out is nil on the alternate screen, where a full-screen program owns the grid.
 type screen struct {
-	lines []shapedRow // one per row; every cells slice is cols long
+	lines []Row // one per row; every Cells slice is cols long
 	cols  int
 	out   *scrollback
 
@@ -28,23 +26,17 @@ type screen struct {
 	// program carves one out, which is how vim keeps its status line still.
 	top, bot int
 
-	// wrapNext parks the cursor past the last column rather than wrapping straight
-	// away. A character written into the last column must not scroll the screen — that
-	// happens on the character after it, if one ever comes. Wrapping eagerly instead
-	// puts a blank line after every full-width line.
+	// wrapNext parks the cursor past the last column rather than wrapping straight away: a
+	// character in the last column must not scroll, or every full line gets a blank after it.
 	wrapNext bool
 	autowrap bool // DECAWM
 
-	pen   cell // the attributes a written cell takes; SGR sets it
+	pen   Cell // the attributes a written cell takes; SGR sets it
 	saved savedCursor
-
-	// gen invalidates every row's shaping at once, for the one thing that affects all
-	// of them: a width change. An ordinary write zeroes its own row's gen instead.
-	gen uint32
 }
 
 func newScreen(cols, rows int, out *scrollback) *screen {
-	s := &screen{cols: max(cols, 0), out: out, autowrap: true, gen: 1}
+	s := &screen{cols: max(cols, 0), out: out, autowrap: true}
 	s.setHeight(max(rows, 0))
 	return s
 }
@@ -52,16 +44,13 @@ func newScreen(cols, rows int, out *scrollback) *screen {
 func (s *screen) height() int { return len(s.lines) }
 
 // row is the i-th row of the grid, top first.
-func (s *screen) row(i int) *shapedRow { return &s.lines[i] }
+func (s *screen) row(i int) *Row { return &s.lines[i] }
 
-// erased is what a clear leaves behind: no rune, but the pen's background. Erasing
-// paints — colouring a region by setting a background and wiping it is how every
-// full-screen program fills space.
-func (s *screen) erased() cell { return cell{BG: s.pen.BG} }
+// erased is what a clear leaves behind: no rune, but the pen's background. Erasing paints —
+// that is how a full-screen program fills space.
+func (s *screen) erased() Cell { return Cell{BG: s.pen.BG} }
 
-// resize refits the grid. There is no reflow: a line keeps its cells from the left and
-// is clipped or padded on the right. Rewrapping history to a new width is its own
-// problem, and this milestone does not attempt it.
+// resize refits the grid. There is no reflow: a line is clipped or padded on the right.
 func (s *screen) resize(cols, rows int) {
 	if cols = max(cols, 0); cols != s.cols {
 		s.cols = cols
@@ -69,29 +58,24 @@ func (s *screen) resize(cols, rows int) {
 			s.lines[i].resizeTo(cols)
 		}
 		s.curCol = min(s.curCol, max(cols-1, 0))
-		s.gen = nextGen(s.gen) // every row was shaped against the old width
 	}
 	s.setHeight(max(rows, 0))
 	s.wrapNext = s.wrapNext && s.curCol == s.cols-1
 }
 
-// setHeight grows the grid with blank rows, or sheds rows off the top into the history
-// and clips whatever is still over from the bottom.
-//
-// Shedding from the top first keeps the cursor — and so the prompt and whatever the
-// shell just printed — on screen, which is what a terminal does when its window is
-// dragged shorter.
+// setHeight grows the grid with blank rows, or sheds them off the top into the history and
+// clips the rest from the bottom. Top first, so the cursor and the prompt stay in view.
 func (s *screen) setHeight(rows int) {
 	for s.height() < rows {
-		var r shapedRow
-		r.fill(s.cols, cell{})
+		var r Row
+		r.fill(s.cols, Cell{})
 		s.lines = append(s.lines, r)
 	}
 	if extra := s.height() - rows; extra > 0 {
 		shed := min(extra, s.curRow)
 		for i := range shed {
 			if s.out != nil {
-				s.out.Append(trimBlanks(s.lines[i].cells))
+				s.out.append(&s.lines[i])
 			}
 		}
 		copy(s.lines, s.lines[shed:])
@@ -152,11 +136,11 @@ func (s *screen) put(r rune) {
 	}
 }
 
-// set writes one cell and drops that row's cached glyphs.
-func (s *screen) set(row, col int, c cell) {
+// set writes one cell and bumps the row's version.
+func (s *screen) set(row, col int, c Cell) {
 	l := &s.lines[row]
-	l.cells[col] = c
-	l.gen = 0
+	l.Cells[col] = c
+	l.touch()
 }
 
 // lineFeed moves down a row, scrolling the region when the cursor is on its last line.
@@ -181,9 +165,8 @@ func (s *screen) reverseIndex() {
 	}
 }
 
-// scrollUp moves the region up one line. It reaches the history only when the region
-// is the whole screen: a program that carved one out is managing its own window, and
-// what leaves it is a repaint, not history.
+// scrollUp moves the region up one line, reaching the history only when the region is the
+// whole screen: what leaves a carved-out region is a repaint, not history.
 func (s *screen) scrollUp() {
 	s.scrollUpAt(s.top, s.top == 0 && s.bot == s.height()-1)
 }
@@ -194,7 +177,7 @@ func (s *screen) scrollUpAt(top int, toHistory bool) {
 	}
 	row := s.lines[top]
 	if toHistory && s.out != nil {
-		s.out.Append(trimBlanks(row.cells)) // Append copies; row is about to be reused
+		s.out.append(&row) // append copies; row is about to be reused
 	}
 	copy(s.lines[top:s.bot], s.lines[top+1:s.bot+1])
 	row.fill(s.cols, s.erased())
@@ -239,7 +222,7 @@ func (s *screen) insertChars(n int) {
 	}
 	l := &s.lines[s.curRow]
 	n = min(n, s.cols-s.curCol)
-	copy(l.cells[s.curCol+n:], l.cells[s.curCol:])
+	copy(l.Cells[s.curCol+n:], l.Cells[s.curCol:])
 	s.fillRange(s.curRow, s.curCol, s.curCol+n)
 }
 
@@ -249,7 +232,7 @@ func (s *screen) deleteChars(n int) {
 	}
 	l := &s.lines[s.curRow]
 	n = min(n, s.cols-s.curCol)
-	copy(l.cells[s.curCol:], l.cells[s.curCol+n:])
+	copy(l.Cells[s.curCol:], l.Cells[s.curCol+n:])
 	s.fillRange(s.curRow, s.cols-n, s.cols)
 }
 
@@ -300,10 +283,10 @@ func (s *screen) eraseInDisplay(mode int) {
 func (s *screen) fillRange(row, from, to int) {
 	l := &s.lines[row]
 	e := s.erased()
-	for i := max(from, 0); i < min(to, len(l.cells)); i++ {
-		l.cells[i] = e
+	for i := max(from, 0); i < min(to, len(l.Cells)); i++ {
+		l.Cells[i] = e
 	}
-	l.gen = 0
+	l.touch()
 }
 
 func (s *screen) carriageReturn() { s.curCol, s.wrapNext = 0, false }
@@ -335,7 +318,7 @@ func (s *screen) restore() {
 
 // reset returns the screen to a fresh state, as entering the alternate screen wants.
 func (s *screen) reset() {
-	s.pen = cell{}
+	s.pen = Cell{}
 	for r := range s.height() {
 		s.fillRange(r, 0, s.cols)
 	}
