@@ -33,9 +33,19 @@ const (
 	actionScrollPageDown
 	actionScrollLineUp
 	actionScrollLineDown
+	actionNewTab
+	actionCloseTab
+	actionNextTab
+	actionPrevTab
 
-	numActions
+	// goto_tab_1 through goto_tab_9, named and bound in init rather than written out.
+	actionGotoTab1
+
+	numActions = actionGotoTab1 + numTabKeys
 )
+
+// numTabKeys stops at nine: the tenth has no digit of its own.
+const numTabKeys = 9
 
 // actionNames is what a [keys] entry may be called, and the only such list — the config
 // struct decodes that section as a map rather than a field per action, so there is no
@@ -50,6 +60,10 @@ var actionNames = map[string]action{
 	"scroll_page_down": actionScrollPageDown,
 	"scroll_line_up":   actionScrollLineUp,
 	"scroll_line_down": actionScrollLineDown,
+	"new_tab":          actionNewTab,
+	"close_tab":        actionCloseTab,
+	"next_tab":         actionNextTab,
+	"prev_tab":         actionPrevTab,
 }
 
 // keybinds is the live table, and these are the defaults. Ctrl+Shift is nearly all of it
@@ -64,11 +78,29 @@ var keybinds = map[action]chord{
 	actionSplitVertical:   {glfw.KeyD, glfw.ModControl | glfw.ModShift},
 	actionSplitHorizontal: {glfw.KeyE, glfw.ModControl | glfw.ModShift},
 	actionClosePane:       {glfw.KeyW, glfw.ModControl | glfw.ModShift},
-	actionFocusNext:       {glfw.KeyTab, glfw.ModControl},
+	actionFocusNext:       {glfw.KeyO, glfw.ModAlt},
 	actionScrollPageUp:    {glfw.KeyPageUp, glfw.ModShift},
 	actionScrollPageDown:  {glfw.KeyPageDown, glfw.ModShift},
 	actionScrollLineUp:    {glfw.KeyUp, glfw.ModControl | glfw.ModShift},
 	actionScrollLineDown:  {glfw.KeyDown, glfw.ModControl | glfw.ModShift},
+	actionNewTab:          {glfw.KeyT, glfw.ModControl | glfw.ModShift},
+	actionCloseTab:        {glfw.KeyBackspace, glfw.ModControl | glfw.ModShift},
+
+	actionNextTab: {glfw.KeyTab, glfw.ModControl},
+	actionPrevTab: {glfw.KeyTab, glfw.ModControl | glfw.ModShift},
+}
+
+// Ctrl+Shift+N rather than the Alt+N other terminals use, to keep to the one modifier
+// pair this window reserves.
+func init() {
+	for i := range action(numTabKeys) {
+		act := actionGotoTab1 + i
+		actionNames[fmt.Sprintf("goto_tab_%d", i+1)] = act
+		keybinds[act] = chord{glfw.Key1 + glfw.Key(i), glfw.ModControl | glfw.ModShift}
+	}
+	// Package variables initialise before any init, so boundKeys was inverted while
+	// these nine were still missing.
+	boundKeys = invertKeybinds()
 }
 
 // boundKeys is keybinds inverted, which is the direction a keystroke asks in. Rebuilt
@@ -104,6 +136,18 @@ func (a *app) dispatch(act action) {
 		a.scrollFocused(1)
 	case actionScrollLineDown:
 		a.scrollFocused(-1)
+	case actionNewTab:
+		a.newTab()
+	case actionCloseTab:
+		a.closeTabAt(a.active)
+	case actionNextTab:
+		a.cycleTab(1)
+	case actionPrevTab:
+		a.cycleTab(-1)
+	default:
+		if act >= actionGotoTab1 && act < numActions {
+			a.gotoTab(int(act - actionGotoTab1))
+		}
 	}
 }
 

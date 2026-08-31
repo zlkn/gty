@@ -21,13 +21,13 @@ func keepConfig(t *testing.T) {
 	bg, fg, sel, named := backgroundRGBA, foreground, selectionColor, base16
 	tint, shape := cursorTint, cursorShapeDefault
 	family, size, gamma, icons := fontFamily, fontSize, fontGamma, fontIconScale
-	boxes := fontBoxDrawing
+	boxes, frame := fontBoxDrawing, windowDecorations
 	binds, bound := maps.Clone(keybinds), maps.Clone(boundKeys)
 	t.Cleanup(func() {
 		backgroundRGBA, foreground, selectionColor, base16 = bg, fg, sel, named
 		cursorTint, cursorShapeDefault = tint, shape
 		fontFamily, fontSize, fontGamma, fontIconScale = family, size, gamma, icons
-		fontBoxDrawing = boxes
+		fontBoxDrawing, windowDecorations = boxes, frame
 		keybinds, boundKeys = binds, bound
 		refreshTheme()
 	})
@@ -195,6 +195,22 @@ func TestLoadConfigFont(t *testing.T) {
 	}
 	if fontBoxDrawing {
 		t.Error("box_drawing = false left the frames drawn here")
+	}
+}
+
+// TestLoadConfigWindow covers the [window] section, which is read once at startup
+// rather than through refreshTheme.
+func TestLoadConfigWindow(t *testing.T) {
+	keepConfig(t)
+
+	if !windowDecorations {
+		t.Fatal("the system frame is off by default")
+	}
+	if err := loadConfig(writeConfig(t, "[window]\ndecorations = false\n")); err != nil {
+		t.Fatal(err)
+	}
+	if windowDecorations {
+		t.Error("decorations = false left the system frame on")
 	}
 }
 

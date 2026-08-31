@@ -41,6 +41,10 @@ var (
 	// fontBoxDrawing draws the frames and blocks ourselves. Read when the renderer is
 	// built, like fontIconScale.
 	fontBoxDrawing = true
+
+	// windowDecorations keeps the system titlebar and frame. Read once, when the window
+	// is created: glfw can retarget the hint but not the window already built from it.
+	windowDecorations = true
 )
 
 const (
@@ -146,6 +150,23 @@ func dim(c [4]float32) [4]float32 {
 	return [4]float32{c[0] * dimFactor, c[1] * dimFactor, c[2] * dimFactor, c[3]}
 }
 
+func glfwBool(b bool) int {
+	if b {
+		return glfw.True
+	}
+	return glfw.False
+}
+
+// mix blends a fraction of b into a, keeping a's alpha.
+func mix(a, b [4]float32, by float32) [4]float32 {
+	return [4]float32{
+		a[0] + (b[0]-a[0])*by,
+		a[1] + (b[1]-a[1])*by,
+		a[2] + (b[2]-a[2])*by,
+		a[3],
+	}
+}
+
 func init() {
 	// glfw must talk to the window manager from the thread it was initialised on.
 	runtime.LockOSThread()
@@ -166,12 +187,19 @@ type app struct {
 	// their own colours; the clear value is the one that has to be decoded here.
 	srgb bool
 
-	// panes and dividers are what the last relayout derived from root.
+	// Never empty: closing the last tab takes the window with it.
+	tabs   []*tab
+	active int
+
+	// Aliases of the active tab, written only by syncActive and stashActive.
 	root     *node
 	panes    []*pane
 	dividers []image.Rectangle
 	focused  *pane
-	nextID   int
+
+	windowTitle string // so setWindowTitle can tell a change from a repeat
+
+	nextID int
 
 	// Blink state, main thread only. blinkShown is the phase the last relayout baked
 	// into the instance buffers, so run can tell a phase flip from an ordinary event.
@@ -248,6 +276,10 @@ func newApp() (*app, error) {
 	}
 
 	glfw.WindowHint(glfw.ClientAPI, glfw.NoAPI)
+	// Undecorated, the tab bar becomes the top of the window: closing is then the quit
+	// binding, and moving and resizing are whatever the window manager offers without a
+	// frame — on most, Super and a drag.
+	glfw.WindowHint(glfw.Decorated, glfwBool(windowDecorations))
 	window, err := glfw.CreateWindow(initialWidth, initialHeight, title, nil, nil)
 	if err != nil {
 		glfw.Terminate()
@@ -313,8 +345,9 @@ func newApp() (*app, error) {
 		return nil, fmt.Errorf("rect renderer: %w", err)
 	}
 
-	a.root = &node{pane: a.newPane()}
-	a.focused = a.root.pane
+	first := a.newPane()
+	a.tabs = []*tab{{root: &node{pane: first}, focused: first}}
+	a.syncActive()
 
 	window.SetFramebufferSizeCallback(func(_ *glfw.Window, width, height int) {
 		a.resize(width, height)
@@ -408,22 +441,26 @@ func (a *app) run() error {
 // This is the only place a screen is written, and it runs on the main thread: the
 // reader goroutines only move bytes, so nothing in the terminal state needs a lock.
 func (a *app) pumpPTY() {
-	for _, p := range a.panes {
-		if p.pty == nil {
-			continue
-		}
-		var err error
-		a.ptyBuf, err = p.pty.Take(a.ptyBuf)
-		if len(a.ptyBuf) > 0 {
-			p.pty.Write(p.feed(a.ptyBuf)) // answers to any queries in this chunk
-			a.needsLayout.Store(true)
-			a.dirty.Store(true)
-		}
-		if err != nil {
-			// The shell exited or the pty went away. closePane rebuilds the tree, so
-			// stop walking the slice it was derived from.
-			a.closePane(p)
-			return
+	// Every tab: a shell whose output nobody drains stops as soon as its pipe buffer
+	// fills, so a build in a background tab would hang rather than finish.
+	for _, t := range a.tabs {
+		for _, p := range t.panes {
+			if p.pty == nil {
+				continue
+			}
+			var err error
+			a.ptyBuf, err = p.pty.Take(a.ptyBuf)
+			if len(a.ptyBuf) > 0 {
+				p.pty.Write(p.feed(a.ptyBuf)) // answers to any queries in this chunk
+				a.needsLayout.Store(true)
+				a.dirty.Store(true)
+			}
+			if err != nil {
+				// closePane rebuilds the tree and may drop a whole tab, so stop
+				// walking what this was derived from.
+				a.closePane(p)
+				return
+			}
 		}
 	}
 }
@@ -581,20 +618,31 @@ func (a *app) splitFocused(d dir) {
 	a.Damage()
 }
 
-// closePane drops a pane and hands the focus to whatever takes its space. The last
-// pane takes the window with it.
+// closePane works on the tab's own fields, syncing only when that tab is on display —
+// pumpPTY reaches every tab. The last pane of a tab takes the tab with it.
 func (a *app) closePane(p *pane) {
-	next, found := a.root.close(p)
+	i := a.tabOf(p)
+	if i < 0 {
+		return
+	}
+	if i == a.active {
+		a.stashActive()
+	}
+	t := a.tabs[i]
+	next, found := t.root.close(p)
 	if !found {
 		return
 	}
 	p.release()
 	if next == nil {
-		a.window.SetShouldClose(true)
+		a.closeTabAt(i)
 		return
 	}
-	if a.focused == p {
-		a.focused = next
+	if t.focused == p {
+		t.focused = next
+	}
+	if i == a.active {
+		a.syncActive()
 	}
 	a.Damage()
 }
@@ -617,21 +665,35 @@ func (a *app) page() int { return max(1, a.focused.rows-1) }
 func (a *app) relayout() {
 	cellW, cellH := a.text.CellSize()
 	surface := image.Rect(0, 0, int(a.config.Width), int(a.config.Height))
-	a.panes, a.dividers = layoutTree(a.root, surface, cellW, cellH)
+
+	bar, content := splitBar(surface, len(a.tabs), cellH)
+
+	// Every tab against the same rect, so none needs a Setsize when it comes forward.
+	a.stashActive()
+	for _, t := range a.tabs {
+		t.panes, t.dividers = layoutTree(t.root, content, cellW, cellH)
+	}
+	a.syncActive()
 
 	// A pane's shell starts here rather than at newPane, because only now does the
 	// pane have a grid to tell it about. The cursor is resolved once here too:
 	// text.Layout and the quads below both read cursor.shown, and if they disagreed
 	// the block would vanish while its glyph stayed inverted — a blank cell.
-	for _, p := range a.panes {
-		a.ensureShell(p)
-		p.cursor.shown = p.cursor.on && (p != a.focused || a.blinkShown)
+	for _, t := range a.tabs {
+		for _, p := range t.panes {
+			a.ensureShell(p)
+			p.cursor.shown = p.cursor.on && (p != a.focused || a.blinkShown)
+		}
 	}
-	a.text.Layout(a.panes, a.focused)
+	// After the stash, so every tab's focus — and so its label — is current.
+	barFills, barLabels := layoutBar(a.tabs, a.active, bar, cellW, cellH)
+	a.setWindowTitle()
+	a.text.Layout(a.panes, a.focused, barLabels)
 
-	// Order matters inside the one buffer: the cells a program painted, then the
-	// dividers, then the cursor on top of its own cell. The glyphs land over all of it.
+	// Order matters inside the one buffer: the tab bar, the cells a program painted,
+	// the dividers, then the cursor. The glyphs land over all of it.
 	a.rects.Reset()
+	a.rects.AddQuads(barFills)
 	a.paint = a.paint[:0]
 	for _, p := range a.panes {
 		a.paint = paintRects(a.paint, p, cellW, cellH)
@@ -751,8 +813,10 @@ func ignoreTransient(err error) error {
 // main releases it again through defer, and a second Destroy would panic inside
 // glfw. Terminate needs no guard — it is a no-op once glfw is uninitialised.
 func (a *app) release() {
-	for _, p := range a.panes {
-		p.release()
+	for _, t := range a.tabs {
+		for _, p := range t.root.leaves(nil) {
+			p.release()
+		}
 	}
 	a.text.release()
 	a.text = nil

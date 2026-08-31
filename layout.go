@@ -65,6 +65,7 @@ type pane struct {
 	pty        *pty.Session
 	noShell    bool   // the shell failed to start; do not keep retrying
 	answers    []byte // replies owed to the shell; see feed
+	title      string // the last OSC 0 or 2; "" until the shell sets one
 	scroll     int    // lines back from the newest; 0 = pinned to the tail
 	cursor     cursor
 
@@ -330,14 +331,46 @@ func (p *pane) ESCDispatch(final byte, inter []byte) {
 }
 
 func (p *pane) OSCDispatch(data []byte) {
+	s := string(data)
+
+	// 0 sets the icon name and the title, 2 the title alone; nothing here shows an
+	// icon name, so the two mean the same thing. See tab.label.
+	if rest, ok := strings.CutPrefix(s, "0;"); ok {
+		p.title = cleanTitle(rest)
+		return
+	}
+	if rest, ok := strings.CutPrefix(s, "2;"); ok {
+		p.title = cleanTitle(rest)
+		return
+	}
+
 	// The colour queries are worth answering because the answer is true: apps ask so
 	// they can pick a light or a dark theme.
-	switch string(data) {
+	switch s {
 	case "10;?":
 		p.reply(oscColor(10, foreground))
 	case "11;?":
 		p.reply(oscColor(11, backgroundRGBA))
 	}
+}
+
+// maxTitle bounds the label, which is a few dozen cells wide at the very most.
+const maxTitle = 256
+
+// cleanTitle drops the controls that would draw as the replacement box. The parser
+// already strips C0 from an OSC payload, but not DEL.
+func cleanTitle(s string) string {
+	out := make([]rune, 0, min(len(s), maxTitle))
+	for _, r := range s {
+		if r < ' ' || r == 0x7F {
+			continue
+		}
+		if len(out) == maxTitle {
+			break
+		}
+		out = append(out, r)
+	}
+	return string(out)
 }
 
 // oscColor formats a colour the way an OSC 10/11 answer wants it: sixteen bits a
@@ -570,6 +603,24 @@ func (n *node) close(target *pane) (next *pane, found bool) {
 		}
 	}
 	return nil, false
+}
+
+// has asks the tree rather than the pane slice a layout pass produced, so it answers
+// for a pane split in but not yet laid out.
+func (n *node) has(target *pane) bool {
+	if n.pane != nil {
+		return n.pane == target
+	}
+	return n.kids[0].has(target) || n.kids[1].has(target)
+}
+
+// leaves appends every pane in the subtree, in layout order. Unlike layoutTree it
+// gives no rects, so it answers before a layout pass has run.
+func (n *node) leaves(dst []*pane) []*pane {
+	if n.pane != nil {
+		return append(dst, n.pane)
+	}
+	return n.kids[1].leaves(n.kids[0].leaves(dst))
 }
 
 // leaf is the subtree's first pane in layout order.

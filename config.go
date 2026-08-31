@@ -25,8 +25,15 @@ type config struct {
 	Colors colorConfig  `toml:"colors"`
 	Cursor cursorConfig `toml:"cursor"`
 	Font   fontConfig   `toml:"font"`
+	Window windowConfig `toml:"window"`
 
 	Keys map[string]string `toml:"keys"`
+}
+
+type windowConfig struct {
+	// Decorations false hides the system titlebar and frame, leaving the tab bar as
+	// the top of the window.
+	Decorations *bool `toml:"decorations"`
 }
 
 // fontConfig picks the face the grid is drawn with. An absent family means the
@@ -160,6 +167,10 @@ func (c config) apply() error {
 	}
 	if bd := c.Font.BoxDrawing; bd != nil {
 		fontBoxDrawing = *bd
+	}
+
+	if d := c.Window.Decorations; d != nil {
+		windowDecorations = *d
 	}
 
 	if s := c.Cursor.Shape; s != nil {

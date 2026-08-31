@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -87,11 +88,19 @@ func TestDefaultKeybinds(t *testing.T) {
 		"split_vertical":   "ctrl+shift+d",
 		"split_horizontal": "ctrl+shift+e",
 		"close_pane":       "ctrl+shift+w",
-		"focus_next":       "ctrl+tab",
+		"focus_next":       "alt+o",
 		"scroll_page_up":   "shift+pageup",
 		"scroll_page_down": "shift+pagedown",
 		"scroll_line_up":   "ctrl+shift+up",
 		"scroll_line_down": "ctrl+shift+down",
+		"new_tab":          "ctrl+shift+t",
+		"close_tab":        "ctrl+shift+backspace",
+		"next_tab":         "ctrl+tab",
+		"prev_tab":         "ctrl+shift+tab",
+	}
+	// The nine digits, which keys.go binds in a loop for the same reason.
+	for i := range numTabKeys {
+		want[fmt.Sprintf("goto_tab_%d", i+1)] = fmt.Sprintf("ctrl+shift+%d", i+1)
 	}
 	if len(actionNames) != int(numActions) || len(keybinds) != int(numActions) {
 		t.Errorf("%d actions, %d of them named and %d of them bound", numActions, len(actionNames), len(keybinds))

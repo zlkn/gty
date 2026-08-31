@@ -281,7 +281,7 @@ func TestCursorSplitLeavesTheCacheLigated(t *testing.T) {
 
 	p.cursor.shown = true
 	p.scr.curCol = 1
-	txt.Layout([]*pane{p}, p)
+	txt.Layout([]*pane{p}, p, nil)
 
 	row, gen = p.rowAt(0)
 	if got := row.shaped(gen, shape); !slices.Equal(got, want) {
@@ -296,7 +296,7 @@ func TestBoxDrawingSkipsTheCoverageBend(t *testing.T) {
 	txt := newTestText(t, device, queue)
 
 	p := gridPane(1, image.Rect(0, 0, 400, 100), 6, 1, "╭──╮ab")
-	txt.Layout([]*pane{p}, p)
+	txt.Layout([]*pane{p}, p, nil)
 	if p.count != 6 {
 		t.Fatalf("laid out %d quads for six cells; the indices below would not line up", p.count)
 	}
@@ -320,7 +320,7 @@ func TestCursorInvertsTheCellGlyph(t *testing.T) {
 	p.cursor.shown = true
 	p.scr.curRow, p.scr.curCol = 0, 2
 
-	txt.Layout([]*pane{p}, p)
+	txt.Layout([]*pane{p}, p, nil)
 	if p.count != 10 {
 		t.Fatalf("laid out %d quads for ten cells; the indices below would not line up", p.count)
 	}
@@ -334,7 +334,7 @@ func TestCursorInvertsTheCellGlyph(t *testing.T) {
 	// An unfocused pane draws a rim instead of a fill, so nothing is covered and
 	// nothing may be inverted.
 	other := gridPane(2, image.Rect(400, 0, 800, 100), 10, 1, "abcdefghij")
-	txt.Layout([]*pane{p, other}, other)
+	txt.Layout([]*pane{p, other}, other, nil)
 	if got := txt.instances[2].color; got != dim(foreground) {
 		t.Errorf("an unfocused pane inverted its cursor cell to %v, want the dimmed %v", got, dim(foreground))
 	}
@@ -363,7 +363,7 @@ func TestCursorRendersFilledAndHollow(t *testing.T) {
 	unfocused.scr.curRow, unfocused.scr.curCol = 0, 2 // on the space
 	panes := []*pane{focused, unfocused}
 
-	txt.Layout(panes, focused)
+	txt.Layout(panes, focused, nil)
 	fills, rims := cursorRects(panes, focused, cellW, cellH)
 	rct.Reset()
 	rct.Add(fills, cursorColor)
@@ -418,7 +418,7 @@ func TestRenderToPNG(t *testing.T) {
 	t.Cleanup(rct.release)
 
 	panes, dividers := splitLayout(t, txt, testWidth, testHeight)
-	txt.Layout(panes, panes[0])
+	txt.Layout(panes, panes[0], nil)
 	rct.Set(dividers, selectionColor)
 
 	a := txt.fm.Atlas
@@ -498,7 +498,7 @@ func TestPaneContentIsIndependent(t *testing.T) {
 	left := gridPane(1, image.Rect(0, 0, 300, 400), 40, 20, row)
 	right := gridPane(2, image.Rect(300, 0, 600, 400), 40, 20, long...)
 
-	txt.Layout([]*pane{left, right}, left)
+	txt.Layout([]*pane{left, right}, left, nil)
 
 	if want := uint32(len(row)); left.count != want {
 		t.Errorf("left pane laid out %d quads, want %d", left.count, want)
@@ -516,7 +516,7 @@ func TestScreenWrapsRatherThanClips(t *testing.T) {
 	txt := newTestText(t, device, queue)
 
 	p := gridPane(1, image.Rect(0, 0, 200, 300), 10, 5, strings.Repeat("=", 25))
-	txt.Layout([]*pane{p}, p)
+	txt.Layout([]*pane{p}, p, nil)
 
 	if got, want := viewText(p)[:3], []string{"==========", "==========", "====="}; !slices.Equal(got, want) {
 		t.Errorf("the wrapped line reads %q, want %q", got, want)
@@ -542,7 +542,7 @@ func TestHistoryClipsToPaneColumns(t *testing.T) {
 
 	p.setGrid(10, 1)
 	p.scrollBy(1) // back onto the wide history row
-	txt.Layout([]*pane{p}, p)
+	txt.Layout([]*pane{p}, p, nil)
 
 	if p.count != 10 {
 		t.Errorf("a 30-cell history row in a 10-column pane laid out %d quads, want 10", p.count)
@@ -558,7 +558,7 @@ func TestScrollRendersDifferentLines(t *testing.T) {
 	p, _ := scrollPane(txt)
 	draw := func(pass *wgpu.RenderPassEncoder) { txt.Draw(pass, []*pane{p}, testWidth, testHeight) }
 
-	txt.Layout([]*pane{p}, p)
+	txt.Layout([]*pane{p}, p, nil)
 	if int(p.count) > p.cols*p.rows {
 		t.Errorf("a %dx%d pane over %d lines laid out %d quads", p.cols, p.rows, p.buf.Len(), p.count)
 	}
@@ -567,7 +567,7 @@ func TestScrollRendersDifferentLines(t *testing.T) {
 	if !p.scrollBy(20) {
 		t.Fatal("a full history did not scroll")
 	}
-	txt.Layout([]*pane{p}, p)
+	txt.Layout([]*pane{p}, p, nil)
 	back := renderOffscreen(t, device, queue, draw)
 
 	if bytes.Equal(tail.Pix, back.Pix) {
@@ -591,13 +591,13 @@ func BenchmarkScrollLayout(b *testing.B) {
 	device, queue := newTestGPU(b)
 	txt := newTestText(b, device, queue)
 	p, panes := scrollPane(txt)
-	txt.Layout(panes, p)
+	txt.Layout(panes, p, nil)
 
 	for b.Loop() {
 		if !p.scrollBy(wheelLines) {
 			p.scroll = 0
 		}
-		txt.Layout(panes, p)
+		txt.Layout(panes, p, nil)
 	}
 }
 
@@ -612,7 +612,7 @@ func BenchmarkScrollLayoutCold(b *testing.B) {
 		// Two width changes leave cols where it was and every cached row stale.
 		p.buf.setCols(p.cols + 1)
 		p.buf.setCols(p.cols)
-		txt.Layout(panes, p)
+		txt.Layout(panes, p, nil)
 	}
 }
 
@@ -632,7 +632,7 @@ func TestLayoutGrowsVertexBuffer(t *testing.T) {
 	}
 	p := gridPane(1, image.Rect(0, 0, testWidth, testHeight), cols, rows, lines...)
 
-	txt.Layout([]*pane{p}, p)
+	txt.Layout([]*pane{p}, p, nil)
 
 	if want := uint32(rows * cols); p.count != want {
 		t.Fatalf("laid out %d quads, want %d — none may be dropped", p.count, want)
@@ -664,7 +664,7 @@ func TestNonASCIIRenders(t *testing.T) {
 
 	const line = "привет ┌─┐ héllo"
 	p := gridPane(1, image.Rect(0, 0, testWidth, 200), 40, 2, line)
-	txt.Layout([]*pane{p}, p)
+	txt.Layout([]*pane{p}, p, nil)
 
 	if want := uint32(len([]rune(line))); p.count != want {
 		t.Fatalf("laid out %d quads for %d runes", p.count, want)
@@ -702,7 +702,7 @@ func TestMissingGlyphDrawsABox(t *testing.T) {
 		t.Skip("the embedded face has Nerd Font icons after all")
 	}
 	p := gridPane(1, image.Rect(0, 0, testWidth, 200), 40, 2, "a\U000f10feb")
-	txt.Layout([]*pane{p}, p)
+	txt.Layout([]*pane{p}, p, nil)
 
 	if p.count != 3 {
 		t.Fatalf("laid out %d quads for three cells", p.count)
@@ -762,7 +762,7 @@ func TestCoverageGammaLeavesIconsAlone(t *testing.T) {
 
 	// Two cells of room after the icon: it is scaled to the line's height and overhangs.
 	p := gridPane(1, image.Rect(0, 0, testWidth, 200), 12, 1, "\U0000F015   eaosw")
-	txt.Layout([]*pane{p}, p)
+	txt.Layout([]*pane{p}, p, nil)
 	render := func(exp float32) *image.RGBA {
 		was := coverageExp
 		coverageExp = exp
@@ -797,7 +797,7 @@ func TestCoverageGammaThickensOnlyTheEdges(t *testing.T) {
 
 	// Letters with plenty of edge: round sides and diagonals, not just uprights.
 	p := gridPane(1, image.Rect(0, 0, testWidth, 200), 8, 1, "eaoswzgm")
-	txt.Layout([]*pane{p}, p)
+	txt.Layout([]*pane{p}, p, nil)
 	render := func(exp float32) *image.RGBA {
 		was := coverageExp
 		coverageExp = exp
@@ -822,4 +822,115 @@ func TestCoverageGammaThickensOnlyTheEdges(t *testing.T) {
 	t.Logf("ink mass %d -> %d (%.0f%%), darkest %d either way",
 		inkMass(plain, row), inkMass(bent, row),
 		100*float64(inkMass(bent, row))/float64(inkMass(plain, row)), maxInk(plain, row))
+}
+
+// TestTabBarRenders draws a two-tab frame: the active tab is filled, its label is
+// undimmed, and the panes sit clear of the bar.
+func TestTabBarRenders(t *testing.T) {
+	device, queue := newTestGPU(t)
+	txt := newTestText(t, device, queue)
+	rct, err := newRects(device, queue, testFormat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(rct.release)
+
+	cellW, cellH := txt.CellSize()
+	surface := image.Rect(0, 0, testWidth, testHeight)
+	tabs := []*tab{tabOf1(1), tabOf1(2)}
+	tabs[0].focused.title, tabs[1].focused.title = "fish", "htop"
+
+	bar, content := splitBar(surface, len(tabs), cellH)
+	if bar.Empty() {
+		t.Fatalf("two tabs in a %v surface got no bar", surface)
+	}
+	for _, tb := range tabs {
+		tb.panes, _ = layoutTree(tb.root, content, cellW, cellH)
+		feedText(tb.panes[0], "hello")
+	}
+
+	const active = 1
+	fills, labels := layoutBar(tabs, active, bar, cellW, cellH)
+	panes := tabs[active].panes
+	txt.Layout(panes, panes[0], labels)
+	rct.Reset()
+	rct.AddQuads(fills)
+	rct.Upload()
+
+	// The chrome runs come first and the panes follow, contiguously: one Draw per group
+	// with firstInstance is only correct if the ranges are disjoint and in order.
+	var next uint32
+	for i, c := range txt.chrome {
+		if c.count == 0 {
+			t.Errorf("label %d drew nothing", i)
+		}
+		if c.first != next {
+			t.Errorf("label %d starts at %d, want %d", i, c.first, next)
+		}
+		next = c.first + c.count
+	}
+	for _, p := range panes {
+		if p.first != next {
+			t.Errorf("pane %d starts at %d, want %d", p.id, p.first, next)
+		}
+		next = p.first + p.count
+	}
+	if int(next) != len(txt.instances) {
+		t.Errorf("the groups cover %d instances of %d", next, len(txt.instances))
+	}
+
+	img := renderOffscreen(t, device, queue, func(pass *wgpu.RenderPassEncoder) {
+		rct.Draw(pass, testWidth, testHeight)
+		txt.Draw(pass, panes, testWidth, testHeight)
+	})
+
+	// base is the divider's underside; the bar keeps dividerPad of air below it.
+	slice, beyond := labels[active].rect, bar.Max.X-px(dividerInset)-1
+	base := bar.Max.Y - px(dividerPad)
+	if got, want := pixelAt(img, slice.Min.X+1, base-1), pixelOf(palette[tabAccent]); !near(got, want, 2) {
+		t.Errorf("under the active tab is %v, want the underline %v", got, want)
+	}
+	if got, want := pixelAt(img, beyond, base-1), pixelOf(selectionColor); !near(got, want, 2) {
+		t.Errorf("past the last tab the line is %v, want the divider %v", got, want)
+	}
+	if got, want := pixelAt(img, bar.Max.X-1, base-1), pixelOf(backgroundRGBA); !near(got, want, 2) {
+		t.Errorf("the far edge is %v, want the divider inset off it", got)
+	}
+	// Lighter under the line than on it, and the terminal starts clear of both.
+	if got, want := pixelAt(img, beyond, base), pixelOf(mix(selectionColor, backgroundRGBA, dividerFade)); !near(got, want, 2) {
+		t.Errorf("under the divider is %v, want the lighter row %v", got, want)
+	}
+	if got, want := pixelAt(img, beyond, bar.Max.Y-1), pixelOf(backgroundRGBA); !near(got, want, 2) {
+		t.Errorf("the gap before the terminal is %v, want the background %v", got, want)
+	}
+	// One pixel above the divider is the underline's alone; the divider is thinner.
+	above := base - px(dividerWidth) - 1
+	if got, want := pixelAt(img, slice.Min.X+1, above), pixelOf(palette[tabAccent]); !near(got, want, 2) {
+		t.Errorf("the underline is %v at y %d, want it thicker than the divider", got, above)
+	}
+	if got, want := pixelAt(img, beyond, above), pixelOf(backgroundRGBA); !near(got, want, 2) {
+		t.Errorf("the bar is %v above the divider at its far end, want the background %v", got, want)
+	}
+
+	for i, l := range labels {
+		if ink := inkPixels(img, l.rect); ink == 0 {
+			t.Errorf("tab %d drew no label", i)
+		}
+	}
+	for i, c := range txt.chrome {
+		if got := txt.instances[c.first].color; got != foreground {
+			t.Errorf("tab %d's label is %v, want the plain foreground %v", i, got, foreground)
+		}
+	}
+
+	// The bar is chrome: no pane may reach into it, and no glyph may be drawn over it.
+	for _, p := range panes {
+		if p.rect.Min.Y < bar.Max.Y {
+			t.Errorf("pane %d starts at y %d, inside a bar ending at %d", p.id, p.rect.Min.Y, bar.Max.Y)
+		}
+	}
+
+	f, _ := os.Create("/tmp/gty-tabs.png")
+	defer f.Close()
+	png.Encode(f, img)
 }
