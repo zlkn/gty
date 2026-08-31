@@ -280,6 +280,7 @@ func newApp() (*app, error) {
 	// binding, and moving and resizing are whatever the window manager offers without a
 	// frame — on most, Super and a drag.
 	glfw.WindowHint(glfw.Decorated, glfwBool(windowDecorations))
+	glfw.WindowHintString(glfw.WaylandAppID, "gty")
 	window, err := glfw.CreateWindow(initialWidth, initialHeight, title, nil, nil)
 	if err != nil {
 		glfw.Terminate()
