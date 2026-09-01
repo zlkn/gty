@@ -422,3 +422,61 @@ func TestCursorStyleReturnsToTheConfiguredDefault(t *testing.T) {
 		}
 	}
 }
+
+// TestAppCursorMode: DECCKM is what tells a host to send SS3 for the arrows. ncurses sets it
+// on startup — smkx is \E[?1h — and then matches only kcuu1=\EOA, so htop and ncdu have dead
+// arrow keys on a terminal that ignores the mode.
+func TestAppCursorMode(t *testing.T) {
+	tm := New(20, 3)
+	if tm.AppCursor() {
+		t.Error("a fresh terminal is already in application cursor mode")
+	}
+
+	tm.Feed([]byte("\x1b[?1h"))
+	if !tm.AppCursor() {
+		t.Error("DECSET 1 left the terminal in normal cursor mode")
+	}
+	tm.Feed([]byte("\x1b[?1l"))
+	if tm.AppCursor() {
+		t.Error("DECRST 1 left the terminal in application cursor mode")
+	}
+
+	// RIS puts it back; the alternate screen does not touch it, because ncurses sends rmkx
+	// itself on the way out.
+	tm.Feed([]byte("\x1b[?1h\x1bc"))
+	if tm.AppCursor() {
+		t.Error("RIS did not return the terminal to normal cursor mode")
+	}
+	tm.Feed([]byte("\x1b[?1h\x1b[?1049h"))
+	if !tm.AppCursor() {
+		t.Error("entering the alternate screen cleared the mode")
+	}
+}
+
+// TestAppKeypadMode: DECKPAM is the other half of smkx, which is \E[?1h\E=. In it the keypad
+// sends SS3 — terminfo's kpZRO=\EOp — rather than the digits printed on the keys.
+func TestAppKeypadMode(t *testing.T) {
+	tm := New(20, 3)
+	if tm.AppKeypad() {
+		t.Error("a fresh terminal is already in application keypad mode")
+	}
+
+	tm.Feed([]byte("\x1b=")) // DECKPAM
+	if !tm.AppKeypad() {
+		t.Error("ESC = left the keypad numeric")
+	}
+	tm.Feed([]byte("\x1b>")) // DECKPNM
+	if tm.AppKeypad() {
+		t.Error("ESC > left the keypad in application mode")
+	}
+
+	// DECNKM is the mode form of the same thing, and RIS returns to numeric.
+	tm.Feed([]byte("\x1b[?66h"))
+	if !tm.AppKeypad() {
+		t.Error("DECSET 66 left the keypad numeric")
+	}
+	tm.Feed([]byte("\x1bc"))
+	if tm.AppKeypad() {
+		t.Error("RIS did not return the keypad to numeric")
+	}
+}

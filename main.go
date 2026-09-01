@@ -514,7 +514,11 @@ func (a *app) onKey(key glfw.Key, mods glfw.ModifierKey) {
 		a.dispatch(act)
 		return
 	}
-	a.toShell(keyBytes(key, mods))
+	b := keyBytes(key, mods, a.focused.term.AppCursor(), a.focused.term.AppKeypad())
+	// Claim whatever was encoded here too: a keypad digit reaches the character callback as
+	// well, and the shell would see it twice.
+	a.keyClaimed = len(b) > 0
+	a.toShell(b)
 }
 
 // typed sends a character the window manager did not claim. Printable input arrives
@@ -544,40 +548,123 @@ func (a *app) toShell(b []byte) {
 	}
 }
 
-// keyBytes is what an unclaimed key sends to the shell. Printable characters are not
-// here: glfw reports those to the character callback instead.
-func keyBytes(key glfw.Key, mods glfw.ModifierKey) []byte {
+// xtermMod is the modifier parameter xterm puts in a key's sequence: one plus a bitmask, so
+// Ctrl alone is 5. Zero means nothing was held and the key keeps its bare form.
+func xtermMod(mods glfw.ModifierKey) int {
+	var m int
+	if mods&glfw.ModShift != 0 {
+		m |= 1
+	}
+	if mods&glfw.ModAlt != 0 {
+		m |= 2
+	}
+	if mods&glfw.ModControl != 0 {
+		m |= 4
+	}
+	if mods&glfw.ModSuper != 0 {
+		m |= 8
+	}
+	if m == 0 {
+		return 0
+	}
+	return m + 1
+}
+
+// cursorKey is an arrow, Home or End. A held modifier goes into a CSI parameter and takes the
+// sequence back to CSI form whatever DECCKM said — terminfo has kUP5=\E[1;5A.
+func cursorKey(final byte, mods glfw.ModifierKey, appCursor bool) []byte {
+	if m := xtermMod(mods); m != 0 {
+		return fmt.Appendf(nil, "\x1b[1;%d%c", m, final)
+	}
+	if appCursor {
+		return []byte{0x1B, 'O', final}
+	}
+	return []byte{0x1B, '[', final}
+}
+
+// tildeKey is a CSI n ~ key: Delete, Page Up, Page Down. Never SS3, in either cursor mode.
+func tildeKey(n int, mods glfw.ModifierKey) []byte {
+	if m := xtermMod(mods); m != 0 {
+		return fmt.Appendf(nil, "\x1b[%d;%d~", n, m)
+	}
+	return fmt.Appendf(nil, "\x1b[%d~", n)
+}
+
+// keypadFinal is the SS3 final byte a keypad key sends in application mode, after terminfo's
+// kpZRO=\EOp and its neighbours. Enter is not here: it is the one with a fallback.
+func keypadFinal(key glfw.Key) (byte, bool) {
+	if key >= glfw.KeyKP0 && key <= glfw.KeyKP9 {
+		return byte('p' + key - glfw.KeyKP0), true
+	}
+	switch key {
+	case glfw.KeyKPDecimal:
+		return 'n', true
+	case glfw.KeyKPDivide:
+		return 'o', true
+	case glfw.KeyKPMultiply:
+		return 'j', true
+	case glfw.KeyKPSubtract:
+		return 'm', true
+	case glfw.KeyKPAdd:
+		return 'k', true
+	case glfw.KeyKPEqual:
+		return 'X', true
+	}
+	return 0, false
+}
+
+// keyBytes is what an unclaimed key sends to the shell. Printable characters are not here:
+// glfw reports those to the character callback instead.
+//
+// appCursor is DECCKM and appKeypad DECKPAM — the two modes smkx turns on. ncurses matches
+// only what terminfo promised, so ignoring them leaves htop and ncdu with dead keys.
+func keyBytes(key glfw.Key, mods glfw.ModifierKey, appCursor, appKeypad bool) []byte {
+	// These carry their modifiers in a CSI parameter, so they answer here and skip the escape
+	// prefix below: xterm puts Alt in the parameter for them rather than in front.
+	switch key {
+	case glfw.KeyUp:
+		return cursorKey('A', mods, appCursor)
+	case glfw.KeyDown:
+		return cursorKey('B', mods, appCursor)
+	case glfw.KeyRight:
+		return cursorKey('C', mods, appCursor)
+	case glfw.KeyLeft:
+		return cursorKey('D', mods, appCursor)
+	case glfw.KeyHome:
+		return cursorKey('H', mods, appCursor)
+	case glfw.KeyEnd:
+		return cursorKey('F', mods, appCursor)
+	case glfw.KeyDelete:
+		return tildeKey(3, mods)
+	case glfw.KeyPageUp:
+		return tildeKey(5, mods)
+	case glfw.KeyPageDown:
+		return tildeKey(6, mods)
+	}
+
 	var b []byte
 	switch key {
-	case glfw.KeyEnter, glfw.KeyKPEnter:
+	case glfw.KeyEnter:
 		b = []byte{'\r'}
+	case glfw.KeyKPEnter:
+		if b = []byte{'\r'}; appKeypad {
+			b = []byte{0x1B, 'O', 'M'} // kent
+		}
 	case glfw.KeyBackspace:
 		b = []byte{0x7F}
 	case glfw.KeyTab:
 		b = []byte{'\t'}
 	case glfw.KeyEscape:
 		b = []byte{0x1B}
-	case glfw.KeyUp:
-		b = []byte("\x1b[A")
-	case glfw.KeyDown:
-		b = []byte("\x1b[B")
-	case glfw.KeyRight:
-		b = []byte("\x1b[C")
-	case glfw.KeyLeft:
-		b = []byte("\x1b[D")
-	case glfw.KeyHome:
-		b = []byte("\x1b[H")
-	case glfw.KeyEnd:
-		b = []byte("\x1b[F")
-	case glfw.KeyDelete:
-		b = []byte("\x1b[3~")
-	case glfw.KeyPageUp:
-		b = []byte("\x1b[5~")
-	case glfw.KeyPageDown:
-		b = []byte("\x1b[6~")
 	default:
-		// Ctrl+letter is the letter with its top three bits cleared: Ctrl+C is 0x03.
-		if mods&glfw.ModControl != 0 && key >= glfw.KeyA && key <= glfw.KeyZ {
+		switch final, keypad := keypadFinal(key); {
+		case keypad && appKeypad:
+			b = []byte{0x1B, 'O', final}
+		case keypad:
+			// Numeric mode prints the digit on the key, and glfw reports that to the
+			// character callback; there is nothing to send from here.
+		case mods&glfw.ModControl != 0 && key >= glfw.KeyA && key <= glfw.KeyZ:
+			// Ctrl+letter is the letter with its top three bits cleared: Ctrl+C is 0x03.
 			b = []byte{byte(key-glfw.KeyA) + 1}
 		}
 	}

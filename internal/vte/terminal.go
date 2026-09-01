@@ -84,6 +84,8 @@ type Terminal struct {
 	shape        CursorShape
 	shapeDefault CursorShape
 	visible      bool // DECTCEM
+	appCursor    bool // DECCKM
+	appKeypad    bool // DECKPAM
 	title        string
 
 	answers []byte // replies owed to the shell; see feed
@@ -239,6 +241,22 @@ func (t *Terminal) Retired() uint64 {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 	return t.hist.retired
+}
+
+// AppCursor is DECCKM: the cursor keys and Home and End go out as SS3 rather than CSI. A host
+// reads it when a key is pressed, not per frame, because a program sets it before it draws.
+func (t *Terminal) AppCursor() bool {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.appCursor
+}
+
+// AppKeypad is DECKPAM: the keypad sends SS3 rather than the digits printed on it. Read at
+// key time for the same reason as AppCursor.
+func (t *Terminal) AppKeypad() bool {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.appKeypad
 }
 
 // MaxScroll is as far back as a view can go, which is exactly the history's length: the

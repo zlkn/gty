@@ -142,10 +142,14 @@ func (t *Terminal) setCursorStyle(param int) {
 func (t *Terminal) setModes(params []int, on bool) {
 	for _, m := range params {
 		switch m {
+		case 1: // DECCKM
+			t.appCursor = on
 		case 7: // DECAWM
 			t.pri.autowrap, t.alt.autowrap = on, on
 		case 25: // DECTCEM
 			t.visible = on
+		case 66: // DECNKM, the mode form of DECKPAM
+			t.appKeypad = on
 		case 47, 1047, 1049:
 			t.useAlt(on, m == 1049)
 		}
@@ -179,6 +183,10 @@ func (t *Terminal) esc(final byte, inter []byte) {
 		return // charset designation and friends
 	}
 	switch final {
+	case '=': // DECKPAM
+		t.appKeypad = true
+	case '>': // DECKPNM
+		t.appKeypad = false
 	case '7':
 		t.scr.save()
 	case '8':
@@ -193,7 +201,7 @@ func (t *Terminal) esc(final byte, inter []byte) {
 	case 'c': // RIS
 		t.useAlt(false, false)
 		t.pri.reset()
-		t.shape = t.shapeDefault
+		t.shape, t.appCursor, t.appKeypad = t.shapeDefault, false, false
 	}
 }
 

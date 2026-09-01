@@ -133,3 +133,145 @@ func TestActionListNamesEveryAction(t *testing.T) {
 		}
 	}
 }
+
+// TestKeyBytesApplicationCursor: the keys smkx moves go out as SS3 in application cursor mode
+// and CSI outside it. terminfo promises kcuu1=\EOA and ncurses matches nothing else, which is
+// why htop and ncdu saw no arrow keys at all while the mode was ignored.
+func TestKeyBytesApplicationCursor(t *testing.T) {
+	for _, tc := range []struct {
+		key         glfw.Key
+		normal, app string
+	}{
+		{glfw.KeyUp, "\x1b[A", "\x1bOA"},
+		{glfw.KeyDown, "\x1b[B", "\x1bOB"},
+		{glfw.KeyRight, "\x1b[C", "\x1bOC"},
+		{glfw.KeyLeft, "\x1b[D", "\x1bOD"},
+		{glfw.KeyHome, "\x1b[H", "\x1bOH"},
+		{glfw.KeyEnd, "\x1b[F", "\x1bOF"},
+	} {
+		if got := string(keyBytes(tc.key, 0, false, false)); got != tc.normal {
+			t.Errorf("key %v sends %q in normal mode, want %q", tc.key, got, tc.normal)
+		}
+		if got := string(keyBytes(tc.key, 0, true, false)); got != tc.app {
+			t.Errorf("key %v sends %q in application mode, want %q", tc.key, got, tc.app)
+		}
+	}
+
+	// Everything else stays CSI: terminfo has kpp=\E[5~ and knp=\E[6~ whatever smkx did.
+	for _, tc := range []struct {
+		key  glfw.Key
+		want string
+	}{
+		{glfw.KeyPageUp, "\x1b[5~"},
+		{glfw.KeyPageDown, "\x1b[6~"},
+		{glfw.KeyDelete, "\x1b[3~"},
+	} {
+		for _, app := range []bool{false, true} {
+			if got := string(keyBytes(tc.key, 0, app, false)); got != tc.want {
+				t.Errorf("key %v with appCursor=%v sends %q, want %q", tc.key, app, got, tc.want)
+			}
+		}
+	}
+}
+
+// TestXtermMod is the modifier parameter's arithmetic: one plus shift, alt, ctrl and super as
+// bits one, two, four and eight. terminfo names every combination, from kUP=\E[1;2A up.
+func TestXtermMod(t *testing.T) {
+	for _, tc := range []struct {
+		mods glfw.ModifierKey
+		want int
+	}{
+		{0, 0},
+		{glfw.ModShift, 2},
+		{glfw.ModAlt, 3},
+		{glfw.ModShift | glfw.ModAlt, 4},
+		{glfw.ModControl, 5},
+		{glfw.ModControl | glfw.ModShift, 6},
+		{glfw.ModControl | glfw.ModAlt, 7},
+		{glfw.ModControl | glfw.ModAlt | glfw.ModShift, 8},
+		{glfw.ModSuper, 9},
+	} {
+		if got := xtermMod(tc.mods); got != tc.want {
+			t.Errorf("mods %v give parameter %d, want %d", tc.mods, got, tc.want)
+		}
+	}
+}
+
+// TestKeyBytesModifiedCursor: a modifier goes into a CSI parameter, which is also what takes
+// the sequence out of SS3 form — terminfo has kUP5=\E[1;5A, never \EO-anything.
+func TestKeyBytesModifiedCursor(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		key  glfw.Key
+		mods glfw.ModifierKey
+		want string
+	}{
+		{"kUP, shift+up", glfw.KeyUp, glfw.ModShift, "\x1b[1;2A"},
+		{"kUP5, ctrl+up", glfw.KeyUp, glfw.ModControl, "\x1b[1;5A"},
+		{"kLFT3, alt+left", glfw.KeyLeft, glfw.ModAlt, "\x1b[1;3D"},
+		{"kRIT3, alt+right", glfw.KeyRight, glfw.ModAlt, "\x1b[1;3C"},
+		{"kHOM5, ctrl+home", glfw.KeyHome, glfw.ModControl, "\x1b[1;5H"},
+		{"kEND5, ctrl+end", glfw.KeyEnd, glfw.ModControl, "\x1b[1;5F"},
+		{"kDC5, ctrl+delete", glfw.KeyDelete, glfw.ModControl, "\x1b[3;5~"},
+		{"kPRV5, ctrl+pageup", glfw.KeyPageUp, glfw.ModControl, "\x1b[5;5~"},
+		{"kNXT5, ctrl+pagedown", glfw.KeyPageDown, glfw.ModControl, "\x1b[6;5~"},
+	} {
+		// Both cursor modes: a modified key is CSI either way.
+		for _, app := range []bool{false, true} {
+			if got := string(keyBytes(tc.key, tc.mods, app, false)); got != tc.want {
+				t.Errorf("%s with appCursor=%v sends %q, want %q", tc.name, app, got, tc.want)
+			}
+		}
+	}
+}
+
+// TestKeyBytesAltIsNotPrefixedOnCursorKeys: Alt is a bare escape in front of an ordinary key
+// but a parameter inside a cursor key. Prefixing as well would send two escapes.
+func TestKeyBytesAltIsNotPrefixedOnCursorKeys(t *testing.T) {
+	if got, want := string(keyBytes(glfw.KeyUp, glfw.ModAlt, false, false)), "\x1b[1;3A"; got != want {
+		t.Errorf("alt+up sends %q, want %q", got, want)
+	}
+	// An ordinary key still takes the prefix, which is what shells expect of Alt.
+	if got, want := string(keyBytes(glfw.KeyEnter, glfw.ModAlt, false, false)), "\x1b\r"; got != want {
+		t.Errorf("alt+enter sends %q, want %q", got, want)
+	}
+}
+
+// TestKeyBytesKeypad: in application keypad mode the keypad sends SS3, after terminfo's
+// kpZRO=\EOp and its neighbours. In numeric mode it sends nothing from here — the digit
+// printed on the key reaches the character callback instead, and encoding it twice would
+// double every keystroke.
+func TestKeyBytesKeypad(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		key  glfw.Key
+		want string
+	}{
+		{"kpZRO", glfw.KeyKP0, "\x1bOp"},
+		{"kc1, KP1", glfw.KeyKP1, "\x1bOq"},
+		{"kb2, KP5", glfw.KeyKP5, "\x1bOu"},
+		{"ka1, KP7", glfw.KeyKP7, "\x1bOw"},
+		{"ka3, KP9", glfw.KeyKP9, "\x1bOy"},
+		{"kpDOT", glfw.KeyKPDecimal, "\x1bOn"},
+		{"kpDIV", glfw.KeyKPDivide, "\x1bOo"},
+		{"kpMUL", glfw.KeyKPMultiply, "\x1bOj"},
+		{"kpSUB", glfw.KeyKPSubtract, "\x1bOm"},
+		{"kpADD", glfw.KeyKPAdd, "\x1bOk"},
+	} {
+		if got := string(keyBytes(tc.key, 0, false, true)); got != tc.want {
+			t.Errorf("%s in application mode sends %q, want %q", tc.name, got, tc.want)
+		}
+		if got := keyBytes(tc.key, 0, false, false); got != nil {
+			t.Errorf("%s in numeric mode sends %q, want nothing", tc.name, got)
+		}
+	}
+
+	// Enter is the exception: it has no character to fall back on, so numeric mode still owes
+	// a carriage return.
+	if got, want := string(keyBytes(glfw.KeyKPEnter, 0, false, true)), "\x1bOM"; got != want {
+		t.Errorf("keypad enter in application mode sends %q, want %q (kent)", got, want)
+	}
+	if got, want := string(keyBytes(glfw.KeyKPEnter, 0, false, false)), "\r"; got != want {
+		t.Errorf("keypad enter in numeric mode sends %q, want %q", got, want)
+	}
+}
