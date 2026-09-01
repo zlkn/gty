@@ -21,13 +21,10 @@ type Cursor struct {
 
 const altSeqBase = 1 << 63
 
-// Options configures the shell behind a Terminal. The grid is not among them: Attach uses the
-// terminal's own, which is the only size that can be right.
 type Options struct {
 	// Cmd is the child to start. nil runs $SHELL.
 	Cmd *exec.Cmd
 
-	// CursorShape is what the terminal starts with, and what DECSCUSR 0 and RIS return to.
 	CursorShape CursorShape
 
 	// Wake is called from the reader goroutine once the shell has written. A host with an
@@ -39,10 +36,7 @@ type Options struct {
 	ReportColor func(code int) (r, g, b uint16, ok bool)
 }
 
-// Frame is everything a view needs to draw one frame, read under a single lock so that no
-// part of it can disagree with another.
 type Frame struct {
-	// Lines is the visible window, oldest first, copied out of the terminal.
 	Lines []Row
 
 	Cursor  Cursor
@@ -51,13 +45,10 @@ type Frame struct {
 	HistLen int    // lines of history behind it, and so also the furthest Scroll can go
 	Title   string // the last OSC 0 or 2; "" until the shell sets one
 
-	// Scroll is how far back the window really is once clamped. A view that asked for more
-	// than exists stores this back.
 	Scroll int
 }
 
 type Terminal struct {
-	// mu guards everything below. Parsing takes it for writing, a view for reading.
 	mu sync.RWMutex
 
 	pri, alt *screen // the primary grid and the one a full-screen program gets
@@ -82,8 +73,6 @@ type Terminal struct {
 	reportColor func(code int) (r, g, b uint16, ok bool)
 }
 
-// New is a terminal with no shell behind it: what a test drives with Feed, and what a saved
-// session is replayed into.
 func New(cols, rows int) *Terminal {
 	hist := &scrollback{}
 	pri := newScreen(cols, rows, hist)
@@ -99,7 +88,6 @@ func New(cols, rows int) *Terminal {
 	}
 }
 
-// Start is a terminal with a shell behind it, already reading.
 func Start(cols, rows int, o Options) (*Terminal, error) {
 	t := New(cols, rows)
 	if err := t.Attach(o); err != nil {
@@ -108,8 +96,6 @@ func Start(cols, rows int, o Options) (*Terminal, error) {
 	return t, nil
 }
 
-// Attach starts a shell at the grid the terminal already has, and is a no-op once one is
-// running: a shell told it has no terminal writes its first prompt into nothing.
 func (t *Terminal) Attach(o Options) error {
 	if t.pty != nil {
 		return nil
@@ -154,7 +140,6 @@ func (t *Terminal) Pump() (changed bool, err error) {
 	return true, err
 }
 
-// Feed parses bytes as though the shell had written them.
 func (t *Terminal) Feed(b []byte) {
 	if len(b) > 0 {
 		t.feed(b)
