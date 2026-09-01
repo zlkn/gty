@@ -1,11 +1,3 @@
-// Package vte is the terminal emulator: the grid a shell writes to, the history behind it,
-// and the parser that drives both.
-//
-// This is the model, holding nothing a renderer needs — no fonts, glyphs or pixels — so a
-// session can run with nothing drawing it.
-//
-// One goroutine per terminal reads the pty and only buffers bytes; parsing happens wherever the
-// host calls Pump. The lock guards what those two share.
 package vte
 
 import (
@@ -13,8 +5,6 @@ import (
 	"sync"
 )
 
-// CursorShape is how a cursor marks its cell. DECSCUSR picks between these; drawing one is
-// the view's business.
 type CursorShape uint8
 
 const (
@@ -23,16 +13,12 @@ const (
 	CursorUnderline
 )
 
-// Cursor is where the cursor is and what it looks like. Whether it is painted folds in a
-// blink phase and a focus, which are the view's.
 type Cursor struct {
-	Row, Col int // on the live screen, not in the view
+	Row, Col int // Position on the live screen
 	Shape    CursorShape
 	Visible  bool // DECTCEM
 }
 
-// altSeqBase keeps the alternate screen's line numbers clear of the primary's: the two grids
-// have their own rows and Gens, and a cache keyed by Seq must not confuse them.
 const altSeqBase = 1 << 63
 
 // Options configures the shell behind a Terminal. The grid is not among them: Attach uses the
@@ -156,8 +142,6 @@ func (t *Terminal) notify() {
 	}
 }
 
-// Pump parses whatever the shell has written since the last call and answers its queries.
-// changed is a view's cue to draw; an error means the shell is gone.
 func (t *Terminal) Pump() (changed bool, err error) {
 	if t.pty == nil {
 		return false, nil
@@ -190,17 +174,12 @@ func (t *Terminal) feed(b []byte) {
 	}
 }
 
-// Write sends bytes to the shell — a key press, or a paste.
 func (t *Terminal) Write(b []byte) {
 	if t.pty != nil {
 		t.pty.write(b)
 	}
 }
 
-// Resize refits both grids and tells the shell. The primary can shed lines into the history
-// on the way, which keeps the prompt in view when a window is dragged shorter.
-//
-// There is no reflow: a line is clipped or padded on the right.
 func (t *Terminal) Resize(cols, rows int) {
 	t.mu.Lock()
 	t.pri.resize(cols, rows)
@@ -212,7 +191,6 @@ func (t *Terminal) Resize(cols, rows int) {
 	}
 }
 
-// Close ends the shell. Safe to call twice.
 func (t *Terminal) Close() {
 	if t.pty != nil {
 		t.pty.close()
@@ -220,58 +198,42 @@ func (t *Terminal) Close() {
 	}
 }
 
-// Title is the last title the shell set with OSC 0 or 2. Separate from Frame because a host
-// labels sessions it is not drawing.
 func (t *Terminal) Title() string {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 	return t.title
 }
 
-// Size is the grid.
 func (t *Terminal) Size() (cols, rows int) {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 	return t.scr.cols, t.scr.height()
 }
 
-// Retired is how many lines have ever left the screen, evicted ones included. The history's
-// length cannot stand in for it, because the ring stops growing.
 func (t *Terminal) Retired() uint64 {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 	return t.hist.retired
 }
 
-// AppCursor is DECCKM: the cursor keys and Home and End go out as SS3 rather than CSI. A host
-// reads it when a key is pressed, not per frame, because a program sets it before it draws.
 func (t *Terminal) AppCursor() bool {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 	return t.appCursor
 }
 
-// AppKeypad is DECKPAM: the keypad sends SS3 rather than the digits printed on it. Read at
-// key time for the same reason as AppCursor.
 func (t *Terminal) AppKeypad() bool {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 	return t.appKeypad
 }
 
-// MaxScroll is as far back as a view can go, which is exactly the history's length: the
-// window is the height of the screen.
 func (t *Terminal) MaxScroll() int {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 	return t.histLen()
 }
 
-// Frame is the view's per-frame read: the live screen scrolled back lines further, with all
-// of it taken under one lock so no part can disagree with another.
-//
-// dst is reused and its rows keep their cell allocations, so a steady stream of frames
-// allocates nothing. The rows come back as copies, safe to hold.
 func (t *Terminal) Frame(dst []Row, back int) Frame {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
@@ -291,16 +253,12 @@ func (t *Terminal) Frame(dst []Row, back int) Frame {
 	}
 }
 
-// GetViewport is lines [start, end) of the view, oldest first, numbered from the oldest line
-// still held. It allocates; Frame is the path for a view drawing every frame.
 func (t *Terminal) GetViewport(start, end int) []Row {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 	return t.appendRows(nil, start, end)
 }
 
-// appendRows refills dst with rows [start, end) of the view, clamped to what exists, with the
-// read lock held. Refilled and not rebuilt: the rows in dst's array keep their cell slices.
 func (t *Terminal) appendRows(dst []Row, start, end int) []Row {
 	hist := t.histLen()
 	start, end = max(start, 0), min(end, hist+t.scr.height())
@@ -319,8 +277,6 @@ func (t *Terminal) appendRows(dst []Row, start, end int) []Row {
 	cols := t.scr.cols
 	for i := range dst {
 		src := t.viewRow(start + i)
-		// To the grid's width, not this line's: history is stored trimmed and the screen is
-		// not, so a window straddling both would reallocate every frame as it scrolled.
 		if n := len(src.Cells); cap(dst[i].Cells) < n {
 			dst[i].Cells = make([]Cell, 0, max(n, cols))
 		}
@@ -330,8 +286,6 @@ func (t *Terminal) appendRows(dst []Row, start, end int) []Row {
 	return dst
 }
 
-// viewRow is the i-th row of the view, oldest first. Rows past the end of the history come
-// from the live screen.
 func (t *Terminal) viewRow(i int) *Row {
 	if h := t.histLen(); i >= h {
 		return &t.scr.lines[i-h]
@@ -339,8 +293,6 @@ func (t *Terminal) viewRow(i int) *Row {
 	return t.hist.row(i)
 }
 
-// histLen is how many history lines a view can reach. None on the alternate screen: scrolling
-// back into what the primary left behind would be nonsense.
 func (t *Terminal) histLen() int {
 	if t.scr == t.alt {
 		return 0
