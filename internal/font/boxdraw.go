@@ -7,10 +7,10 @@ import (
 	"golang.org/x/image/math/fixed"
 )
 
-// The box-drawing and block-element glyphs are drawn here rather than taken from the
-// face. Nothing hints an outline (see Hinting), so the face's own spill across two pixel
-// columns and overhang the cell, which seams at every boundary. These are whole pixels
-// and stop at the cell edge.
+// The box-drawing and block-element glyphs are drawn here rather than taken from the face.
+// Hinting fits horizontal edges only (see rasterizer.drawHinted), so the face's own still
+// spill across two pixel columns and overhang the cell, which seams at every boundary.
+// These are whole pixels and stop at the cell edge.
 
 const (
 	firstBoxRune   = 0x2500

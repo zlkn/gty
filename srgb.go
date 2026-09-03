@@ -138,8 +138,8 @@ func relLuminance(c [4]float32) float64 {
 // thin. Only the edges move — a full core is a fixed point of any exponent. Gamma-space
 // blending needs none of this; it is already heavy enough there.
 //
-// Past the usual 1.5-2 because this build draws Light and hints nothing: at 17pt, 16 of 94
-// ASCII glyphs never reach full coverage ('_' peaks at 58%). Past 2.6 it reads as bold.
+// Past the usual 1.5-2 because this build draws Light: hinting fits horizontal edges only,
+// so at 17pt 10 of 94 ASCII glyphs still peak short of full coverage. Past 2.6 reads bold.
 const darkOnLightGamma = 2.2
 
 // coverageExponent is what the shader raises coverage to before it becomes alpha; 1 leaves

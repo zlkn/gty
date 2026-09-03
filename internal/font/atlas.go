@@ -8,7 +8,10 @@ import (
 	"image/png"
 	"math"
 	"os"
+	"slices"
 
+	"github.com/golang/freetype/truetype"
+	xfont "golang.org/x/image/font"
 	"golang.org/x/image/font/sfnt"
 	"golang.org/x/image/math/fixed"
 	"golang.org/x/image/vector"
@@ -166,6 +169,7 @@ func (a *Atlas) grow() bool {
 func (a *Atlas) addFace(fc *face) {
 	a.rast = append(a.rast, &rasterizer{
 		f: fc.font, ppem: fc.ppem, ascent: fc.ascent, fit: fc.fitted, reach: fc.reach,
+		hinted: fc.hinted,
 	})
 }
 
@@ -270,12 +274,20 @@ type rasterizer struct {
 	buf    sfnt.Buffer
 	rast   vector.Rasterizer
 	mask   image.Alpha
+
+	// hinted is the face under the parser that runs its grid-fitting bytecode, gbuf the
+	// outline it loads into. nil takes the plain path; see drawHinted.
+	hinted *truetype.Font
+	gbuf   truetype.GlyphBuf
 }
 
 // draw composites gid onto dst with its pen (the baseline origin) at dot. fit, when not the
 // zero rectangle, is a box the ink is shrunk into and centred in; clip is the hard boundary,
 // so nothing is scribbled over a neighbouring slot.
 func (r *rasterizer) draw(dst *image.Alpha, gid GID, dot fixed.Point26_6, fit, clip image.Rectangle) error {
+	if r.hinted != nil {
+		return r.drawHinted(dst, gid, dot, clip)
+	}
 	segs, err := r.f.LoadGlyph(&r.buf, gid, r.ppem, nil)
 	if err != nil {
 		return err
@@ -303,12 +315,7 @@ func (r *rasterizer) draw(dst *image.Alpha, gid GID, dot fixed.Point26_6, fit, c
 	biasX := dot.X - fixed.Int26_6(dr.Min.X<<6)
 	biasY := dot.Y - fixed.Int26_6(dr.Min.Y<<6)
 	w, h := dr.Dx(), dr.Dy()
-	if n := w * h; cap(r.mask.Pix) < n {
-		r.mask.Pix = make([]uint8, 2*n)
-	}
-	r.mask.Pix = r.mask.Pix[:w*h]
-	r.mask.Stride = w
-	r.mask.Rect = image.Rect(0, 0, w, h)
+	r.resetMask(w, h)
 
 	r.rast.Reset(w, h)
 	r.rast.DrawOp = draw.Src
@@ -340,6 +347,111 @@ func (r *rasterizer) draw(dst *image.Alpha, gid GID, dot fixed.Point26_6, fit, c
 	r.rast.Draw(&r.mask, r.mask.Bounds(), image.Opaque, image.Point{})
 	draw.DrawMask(dst, dr, image.Opaque, image.Point{}, &r.mask, r.mask.Rect.Min, draw.Over)
 	return nil
+}
+
+// drawHinted composites gid with the face's own bytecode run over the outline, which snaps
+// its horizontal edges to whole pixels — the baseline, the x-height, the bar of a "t".
+//
+// No fit box: a fitted face is scaled into its cell at bake time, and scaling a grid-fitted
+// outline undoes the fitting, so those faces are never given a hinted parse.
+func (r *rasterizer) drawHinted(dst *image.Alpha, gid GID, dot fixed.Point26_6, clip image.Rectangle) error {
+	if err := r.gbuf.Load(r.hinted, r.ppem, truetype.Index(gid), xfont.HintingFull); err != nil {
+		return err
+	}
+	// The outline is y-up from the pen where the sheet is y-down, so the box flips with it.
+	b := r.gbuf.Bounds
+	dr := image.Rect(
+		(dot.X + b.Min.X).Floor(), (dot.Y - b.Max.Y).Floor(),
+		(dot.X + b.Max.X).Ceil(), (dot.Y - b.Min.Y).Ceil(),
+	)
+	if dr.Empty() {
+		return nil // blank by design: the space, and the ligature spacer glyphs
+	}
+	if dr = dr.Intersect(clip); dr.Empty() {
+		return nil
+	}
+
+	w, h := dr.Dx(), dr.Dy()
+	r.resetMask(w, h)
+	r.rast.Reset(w, h)
+	r.rast.DrawOp = draw.Src
+	// The rasterizer's origin is dr.Min, so the pen moves there with it.
+	pen := fixed.Point26_6{
+		X: dot.X - fixed.Int26_6(dr.Min.X<<6),
+		Y: dot.Y - fixed.Int26_6(dr.Min.Y<<6),
+	}
+	for i, end := range r.gbuf.Ends {
+		start := 0
+		if i > 0 {
+			start = r.gbuf.Ends[i-1]
+		}
+		r.appendContour(r.gbuf.Points[start:end], pen)
+	}
+	r.rast.Draw(&r.mask, r.mask.Bounds(), image.Opaque, image.Point{})
+	draw.DrawMask(dst, dr, image.Opaque, image.Point{}, &r.mask, r.mask.Rect.Min, draw.Over)
+	return nil
+}
+
+// appendContour walks one contour into the rasterizer. TrueType stores points rather than
+// segments: two off-curve points in a row imply the on-curve midpoint between them, and a
+// contour holding no on-curve point at all starts at a midpoint of its own.
+func (r *rasterizer) appendContour(pts []truetype.Point, pen fixed.Point26_6) {
+	if len(pts) == 0 {
+		return
+	}
+	at := func(p truetype.Point) (x, y float32) {
+		return float32(pen.X+p.X) / 64, float32(pen.Y-p.Y) / 64
+	}
+	on := func(p truetype.Point) bool { return p.Flags&0x01 != 0 }
+	mid := func(a, b truetype.Point) truetype.Point {
+		return truetype.Point{X: (a.X + b.X) / 2, Y: (a.Y + b.Y) / 2, Flags: 0x01}
+	}
+
+	// One MoveTo and then a segment per point, wrapping back onto the point it started at.
+	start, first := 0, mid(pts[len(pts)-1], pts[0])
+	if i := slices.IndexFunc(pts, on); i >= 0 {
+		start, first = i+1, pts[i]
+	}
+	x, y := at(first)
+	r.rast.MoveTo(x, y)
+
+	var ctrl *truetype.Point
+	for i := range pts {
+		p := pts[(start+i)%len(pts)]
+		switch {
+		case on(p) && ctrl == nil:
+			x, y := at(p)
+			r.rast.LineTo(x, y)
+		case on(p):
+			cx, cy := at(*ctrl)
+			x, y := at(p)
+			r.rast.QuadTo(cx, cy, x, y)
+			ctrl = nil
+		case ctrl == nil:
+			ctrl = &p
+		default:
+			cx, cy := at(*ctrl)
+			mx, my := at(mid(*ctrl, p))
+			r.rast.QuadTo(cx, cy, mx, my)
+			ctrl = &p
+		}
+	}
+	// Only an all-off-curve contour ends here: any other has just walked back onto first.
+	if ctrl != nil {
+		cx, cy := at(*ctrl)
+		x, y := at(first)
+		r.rast.QuadTo(cx, cy, x, y)
+	}
+}
+
+// resetMask sizes the scratch mask to w by h, growing its buffer when it has to.
+func (r *rasterizer) resetMask(w, h int) {
+	if n := w * h; cap(r.mask.Pix) < n {
+		r.mask.Pix = make([]uint8, 2*n)
+	}
+	r.mask.Pix = r.mask.Pix[:w*h]
+	r.mask.Stride = w
+	r.mask.Rect = image.Rect(0, 0, w, h)
 }
 
 // fitScale is how much a glyph must shrink to fit box, never above 1.
@@ -399,12 +511,18 @@ func glyphPadding(rs []*rasterizer, cellW, cellH int) (l, t, right, b int) {
 		if err != nil {
 			continue
 		}
+		// A pixel of slack for a hinted face: grid fitting rounds an edge outward, past
+		// the bbox this was measured from.
+		slack := 0
+		if r.hinted != nil {
+			slack = 1
+		}
 		// Bounds are relative to the pen: x=0 at the cell's left edge, y=0 at the baseline,
 		// r.ascent px below the cell's top — each face against its own.
-		l = max(l, -bounds.Min.X.Floor())
-		right = max(right, bounds.Max.X.Ceil()-cellW)
-		t = max(t, -(r.ascent + bounds.Min.Y.Floor()))
-		b = max(b, r.ascent+bounds.Max.Y.Ceil()-cellH)
+		l = max(l, slack-bounds.Min.X.Floor())
+		right = max(right, slack+bounds.Max.X.Ceil()-cellW)
+		t = max(t, slack-(r.ascent+bounds.Min.Y.Floor()))
+		b = max(b, slack+r.ascent+bounds.Max.Y.Ceil()-cellH)
 	}
 	return l, t, right, b // seeded at 0, so every side is already clamped
 }
@@ -429,6 +547,7 @@ func BakeAtlas(fm *FontManager, maxTexture int) (*Atlas, error) {
 		style := Style(i)
 		rs[style] = &rasterizer{
 			f: fc.font, ppem: fc.ppem, ascent: fc.ascent, fit: fc.fitted, reach: fc.reach,
+			hinted: fc.hinted,
 		}
 		if style >= Fallback {
 			// Nothing in a first frame comes from the chain. Ensure bakes on demand.

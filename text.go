@@ -230,6 +230,7 @@ func newFontManager(sizePt, scale float64, maxTexture int) (*font.FontManager, e
 		Size: sizePt, DPI: 72 * scale, MaxTexture: maxTexture,
 		IconFill:   fontIconScale,
 		BoxDrawing: fontBoxDrawing,
+		Hinting:    fontHinting,
 		Warn:       warn,
 	}
 

@@ -7,6 +7,7 @@ require (
 	github.com/creack/pty v1.1.24
 	github.com/go-gl/glfw/v3.4/glfw v0.1.0-pre.1.0.20260628091122-0bd588dc30cf
 	github.com/go-text/typesetting v0.3.4
+	github.com/golang/freetype v0.0.0-20170609003504-e2365dfdc4a0
 	github.com/oliverbestmann/webgpu v1.34.3
 	golang.org/x/image v0.45.0
 )

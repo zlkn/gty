@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"slices"
 
+	"github.com/golang/freetype/truetype"
 	xfont "golang.org/x/image/font"
 	"golang.org/x/image/font/sfnt"
 	"golang.org/x/image/math/fixed"
@@ -75,9 +76,9 @@ func (s Style) String() string {
 	return fmt.Sprintf("Style(%d)", uint8(s))
 }
 
-// Hinting is applied to metrics only. x/image implements no TrueType
-// interpreter, so this quantizes advances and the cell box without touching
-// outlines — the atlas rasterizes identically with or without it.
+// Hinting is applied to metrics only. x/image implements no TrueType interpreter, so this
+// quantizes advances and the cell box and nothing else. Outlines are grid-fitted against a
+// second parse of the same file; see face.hinted and rasterizer.drawHinted.
 const Hinting = xfont.HintingFull
 
 // face is one loaded variant.
@@ -85,6 +86,10 @@ type face struct {
 	font   *sfnt.Font
 	shaper *Shaper
 	buf    sfnt.Buffer // reused by GlyphIndex
+
+	// hinted is the same file under the parser that can run its grid-fitting bytecode.
+	// nil leaves the face on the plain outline; see parseHinted.
+	hinted *truetype.Font
 
 	// Where this face draws: the size it is rasterised at and the baseline's
 	// offset from the top of the cell. The four styles share the grid's own
@@ -129,6 +134,23 @@ func parseFont(src Source) (*sfnt.Font, error) {
 	return c.Font(int(src.Index))
 }
 
+// parseHinted is the same face under the parser that runs its grid-fitting bytecode.
+//
+// nil rather than an error: hinting is an improvement and not a requirement, and every way
+// this fails leaves the glyph drawn exactly as it was before. It fails on a CFF outline,
+// which this parser does not read, and on any face but the first of a collection, which it
+// cannot address.
+func parseHinted(src Source) *truetype.Font {
+	if src.Index != 0 {
+		return nil
+	}
+	f, err := truetype.Parse(src.TTF)
+	if err != nil {
+		return nil
+	}
+	return f
+}
+
 // Finder supplies faces for runes nothing loaded covers — in practice the system's
 // installed fonts, searched on demand. See Library.
 type Finder interface {
@@ -164,6 +186,10 @@ type Options struct {
 	// BoxDrawing draws the frames and blocks here instead of taking the face's; see
 	// boxdraw.go.
 	BoxDrawing bool
+
+	// Hinting runs each face's own bytecode over its outlines, snapping their horizontal
+	// edges to the pixel grid. See rasterizer.drawHinted.
+	Hinting bool
 
 	MaxTexture int // the device's largest 2D texture; it bounds the atlas
 
@@ -263,7 +289,11 @@ func NewManager(o Options) (*FontManager, error) {
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", style, err)
 		}
-		fm.faces[style] = &face{font: f, shaper: sh, ppem: ppem, ascent: ascent, name: o.Family}
+		fc := &face{font: f, shaper: sh, ppem: ppem, ascent: ascent, name: o.Family}
+		if o.Hinting {
+			fc.hinted = parseHinted(o.Styles[style])
+		}
+		fm.faces[style] = fc
 	}
 
 	// A fallback that will not load is worked around, not fatal: the terminal still

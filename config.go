@@ -48,6 +48,9 @@ type fontConfig struct {
 	// BoxDrawing false takes the frames and blocks from the face; see internal/font/boxdraw.go.
 	BoxDrawing *bool `toml:"box_drawing"`
 
+	// Hinting false leaves outlines as designed instead of fitting them to the pixel grid.
+	Hinting *bool `toml:"hinting"`
+
 	// Blend is where a glyph's edge is mixed with what is behind it; see blendSpace.
 	Blend *string `toml:"blend"`
 }
@@ -170,6 +173,9 @@ func (c config) apply() error {
 	}
 	if bd := c.Font.BoxDrawing; bd != nil {
 		fontBoxDrawing = *bd
+	}
+	if h := c.Font.Hinting; h != nil {
+		fontHinting = *h
 	}
 	if b := c.Font.Blend; b != nil {
 		space, ok := blendNames[strings.ToLower(strings.TrimSpace(*b))]

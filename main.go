@@ -46,6 +46,10 @@ var (
 	// built, like fontIconScale.
 	fontBoxDrawing = true
 
+	// fontHinting runs the face's own bytecode over its outlines, which snaps their
+	// horizontal edges to whole pixels. Read when the atlas is baked.
+	fontHinting = true
+
 	// windowDecorations keeps the system titlebar and frame. Read once, when the window
 	// is created: glfw can retarget the hint but not the window already built from it.
 	windowDecorations = true
