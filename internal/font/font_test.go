@@ -11,9 +11,6 @@ import (
 	"golang.org/x/image/math/fixed"
 )
 
-// JetBrains Mono at the config defaults (config.DefaultConfig: 14pt, 72 DPI)
-// with hinted metrics. The wanted values are measured, kept as a regression
-// anchor: the atlas layout and the whole grid geometry are sized from them.
 const (
 	testSize = 14.0
 	testDPI  = 72.0
@@ -33,9 +30,9 @@ const (
 	testMissing = 0x1F600 // an emoji: no glyph anywhere in this build
 )
 
-// testFace names the files the tests load, mirroring what text.go embeds. Spelled out
-// rather than derived from Style.String(), because the mapping is a choice: this build
-// takes Light as its regular weight and Regular as its bold.
+// testFace names the files the tests load. Spelled out rather than derived from
+// Style.String(), and a lighter pair than text.go embeds on purpose: the geometry checks
+// have to hold for a family whose weights were not the ones the grid was tuned on.
 var testFace = [NumStyles]string{
 	Regular:    "../../assets/JetBrainsMonoNerdFontMono-Light.ttf",
 	Bold:       "../../assets/JetBrainsMonoNerdFontMono-Regular.ttf",
