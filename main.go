@@ -46,9 +46,11 @@ var (
 	// built, like fontIconScale.
 	fontBoxDrawing = true
 
-	// fontHinting runs the face's own bytecode over its outlines, which snaps their
-	// horizontal edges to whole pixels. Read when the atlas is baked.
-	fontHinting = true
+	// fontHinting runs the face's own bytecode over its outlines, snapping their horizontal
+	// edges to whole pixels. Off by default: the bytecode fits nothing sideways, so it
+	// sharpens a glyph built from horizontals far more than one built from stems, and the
+	// two then read unevenly together. Read when the atlas is baked.
+	fontHinting = false
 
 	// windowDecorations keeps the system titlebar and frame. Read once, when the window
 	// is created: glfw can retarget the hint but not the window already built from it.
@@ -439,6 +441,11 @@ func (a *app) untilNextPhase() time.Duration {
 func (a *app) run() error {
 	for !a.window.ShouldClose() {
 		a.pumpPTY()
+		// A shell that just exited can have taken the last tab, and the window with it.
+		// Laying out or drawing what is left would reach through released panes.
+		if a.window.ShouldClose() {
+			break
+		}
 		if on := blinkOn(time.Since(a.blinkEpoch), a.windowFocused); on != a.blinkShown {
 			a.blinkShown = on
 			a.needsLayout.Store(true)
