@@ -1,6 +1,8 @@
 [font]
 # family = "JetBrains Mono"
-size = 16
+# size is in points at 96 dpi, the same scale wezterm and kitty use, times the display's
+# own scale: 12 rasterises at 16 px per em on a 1x panel and 32 on a 2x one.
+size = 12
 icon_scale = 0.6
 # false takes the frames and blocks (U+2500-259F) from the font instead of drawing them
 box_drawing = false
@@ -26,10 +28,9 @@ shape = "block"
 
 [colors]
 background = "#ebebeb"
-# background = "#f2f2f2"
 foreground = "#424242"
 selection = "#d9d9d9"
-# cursor = "#424242"  # defaults to the foreground
+cursor = "#20bbfc"
 
 ansi = [
   "#d1d1d1", "#b81a6b", "#1e763c", "#8d5b00",

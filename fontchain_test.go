@@ -148,3 +148,27 @@ func TestFontScaleSizesTheCell(t *testing.T) {
 		t.Errorf("cell is %d px tall at 2x, want about %d", got, want)
 	}
 }
+
+// TestDefaultSizeIsSixteenPixelsPerEm pins the pair: size is points at baseDPI, so the
+// two constants only mean something together.
+func TestDefaultSizeIsSixteenPixelsPerEm(t *testing.T) {
+	if baseDPI != 96 {
+		t.Skip("macOS counts a point as a pixel; what the default cell should be there is for that port to decide")
+	}
+	withFamily(t, "")
+
+	if got := fontSize * baseDPI / 72; got != 16 {
+		t.Errorf("the default rasterises at %g px per em, want 16", got)
+	}
+
+	fm, err := newFontManager(fontSize, 1, testMaxTexture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fm.Close()
+
+	// The cell the rest of the suite's pixel counts assume.
+	if fm.CellWidth != 10 || fm.CellHeight != 22 {
+		t.Errorf("cell %dx%d, want 10x22", fm.CellWidth, fm.CellHeight)
+	}
+}

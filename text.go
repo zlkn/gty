@@ -20,11 +20,11 @@ var textShader string
 var (
 	//go:embed assets/JetBrainsMonoNerdFontMono-Light.ttf
 	regularTTF []byte
-	//go:embed assets/JetBrainsMonoNerdFontMono-SemiBold.ttf
+	//go:embed assets/JetBrainsMonoNerdFontMono-Medium.ttf
 	boldTTF []byte
 	//go:embed assets/JetBrainsMonoNerdFontMono-LightItalic.ttf
 	italicTTF []byte
-	//go:embed assets/JetBrainsMonoNerdFontMono-SemiBoldItalic.ttf
+	//go:embed assets/JetBrainsMonoNerdFontMono-MediumItalic.ttf
 	boldItalicTTF []byte
 )
 
@@ -227,7 +227,7 @@ func newFontManager(sizePt, scale float64, maxTexture int) (*font.FontManager, e
 		Finder: lib,
 		// The display's scale rides in on the DPI: ppem is Size*DPI/72, so the same
 		// point size rasterises at twice the pixels on a 2x panel.
-		Size: sizePt, DPI: 72 * scale, MaxTexture: maxTexture,
+		Size: sizePt, DPI: baseDPI * scale, MaxTexture: maxTexture,
 		IconFill:   fontIconScale,
 		BoxDrawing: fontBoxDrawing,
 		Hinting:    fontHinting,

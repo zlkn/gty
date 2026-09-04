@@ -27,7 +27,7 @@ var (
 	// fontFamily empty means the embedded JetBrains Mono; anything else is looked up
 	// among the installed fonts.
 	fontFamily = ""
-	fontSize   = 16.0
+	fontSize   = 12.0
 
 	// fontGamma bends the antialiasing coverage curve; zero derives it from the theme
 	// and the blend space. See coverageExponent.
