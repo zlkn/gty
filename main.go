@@ -24,8 +24,8 @@ import (
 
 // Set from the config file, which is read before the window is built. Defaults here.
 var (
-	// fontFamily empty means the embedded JetBrains Mono; anything else is looked up
-	// among the installed fonts.
+	// fontFamily empty means the embedded JetBrains Mono
+	// anything else is looked up among the installed fonts.
 	fontFamily = ""
 	fontSize   = 12.0
 
@@ -50,10 +50,8 @@ var (
 	// edges to whole pixels. Off by default: the bytecode fits nothing sideways, so it
 	// sharpens a glyph built from horizontals far more than one built from stems, and the
 	// two then read unevenly together. Read when the atlas is baked.
-	fontHinting = false
+	fontHinting = true
 
-	// windowDecorations keeps the system titlebar and frame. Read once, when the window
-	// is created: glfw can retarget the hint but not the window already built from it.
 	windowDecorations = true
 )
 
