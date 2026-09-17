@@ -357,6 +357,33 @@ func TestCursorInvertsTheCellGlyph(t *testing.T) {
 	}
 }
 
+// TestSelectionRecoloursGlyphs checks that cells in the selection are recoloured to foreground,
+// even if styled with an ANSI colour.
+func TestSelectionRecoloursGlyphs(t *testing.T) {
+	device, queue := newTestGPU(t)
+	txt := newTestText(t, device, queue)
+
+	p := gridPane(1, image.Rect(0, 0, 400, 100), 10, 1, "\x1b[31mABCDE\x1b[0m")
+	seq := p.frame.Lines[0].Seq
+	p.sel = selection{
+		anchor: selPos{seq: seq, col: 1},
+		head:   selPos{seq: seq, col: 2},
+		mode:   selChar,
+		active: true,
+	}
+
+	layout(txt, []*pane{p}, p, nil)
+	if got, want := txt.instances[0].color, palette[1]; got != want {
+		t.Errorf("unselected glyph color = %v, want red %v", got, want)
+	}
+	if got, want := txt.instances[1].color, foreground; got != want {
+		t.Errorf("selected glyph col 1 color = %v, want foreground %v", got, want)
+	}
+	if got, want := txt.instances[2].color, foreground; got != want {
+		t.Errorf("selected glyph col 2 color = %v, want foreground %v", got, want)
+	}
+}
+
 // TestCursorRendersFilledAndHollow is the pixel half: the focused pane's block is
 // solid with the glyph punched out of it, the unfocused pane's is a rim around an
 // untouched cell.

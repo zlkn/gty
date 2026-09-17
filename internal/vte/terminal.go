@@ -2,8 +2,15 @@ package vte
 
 import (
 	"os/exec"
+	"strings"
 	"sync"
 )
+
+// Pos is a place in the session: a line by its Seq, and a column in it.
+type Pos struct {
+	Seq uint64
+	Col int
+}
 
 type CursorShape uint8
 
@@ -58,12 +65,13 @@ type Terminal struct {
 	par parser
 	pty *pty
 
-	shape        CursorShape
-	shapeDefault CursorShape
-	visible      bool // DECTCEM
-	appCursor    bool // DECCKM
-	appKeypad    bool // DECKPAM
-	title        string
+	shape          CursorShape
+	shapeDefault   CursorShape
+	visible        bool // DECTCEM
+	appCursor      bool // DECCKM
+	appKeypad      bool // DECKPAM
+	bracketedPaste bool // DECSET 2004
+	title          string
 
 	answers []byte // replies owed to the shell; see feed
 	inbuf   []byte // bytes taken from the pty, reused between Pumps
@@ -213,6 +221,12 @@ func (t *Terminal) AppKeypad() bool {
 	return t.appKeypad
 }
 
+func (t *Terminal) BracketedPaste() bool {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.bracketedPaste
+}
+
 func (t *Terminal) MaxScroll() int {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
@@ -267,6 +281,7 @@ func (t *Terminal) appendRows(dst []Row, start, end int) []Row {
 		}
 		dst[i].Cells = append(dst[i].Cells[:0], src.Cells...)
 		dst[i].Seq, dst[i].Gen = base+uint64(start+i), src.Gen
+		dst[i].Wrapped = src.Wrapped
 	}
 	return dst
 }
@@ -283,4 +298,110 @@ func (t *Terminal) histLen() int {
 		return 0
 	}
 	return t.hist.len()
+}
+
+// Text extracts the session text between from and to, trimming trailing whitespace per line
+// and joining lines with "\n". Soft-wrapped lines are joined without a newline.
+// When block is true, each row is sliced across the column range [min(from.Col, to.Col), max(from.Col, to.Col)]
+// and joined with "\n".
+// If the selection range does not intersect the available session range (e.g. evicted history), Text returns "".
+func (t *Terminal) Text(from, to Pos, block bool) string {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
+	hist := t.histLen()
+	height := t.scr.height()
+	totalRows := hist + height
+	if totalRows == 0 {
+		return ""
+	}
+
+	base := t.hist.retired - uint64(hist)
+	if t.scr == t.alt {
+		base = altSeqBase
+	}
+	limitSeq := base + uint64(totalRows)
+
+	if block {
+		if from.Seq > to.Seq {
+			from.Seq, to.Seq = to.Seq, from.Seq
+		}
+	} else {
+		if from.Seq > to.Seq || (from.Seq == to.Seq && from.Col > to.Col) {
+			from, to = to, from
+		}
+	}
+
+	if to.Seq < base || from.Seq >= limitSeq {
+		return ""
+	}
+
+	var startRow, endRow int
+	if from.Seq < base {
+		startRow = 0
+	} else {
+		startRow = int(from.Seq - base)
+	}
+	if to.Seq >= limitSeq {
+		endRow = totalRows - 1
+	} else {
+		endRow = int(to.Seq - base)
+	}
+
+	minCol, maxCol := min(from.Col, to.Col), max(from.Col, to.Col)
+	cols := t.scr.cols
+
+	var b strings.Builder
+	for r := startRow; r <= endRow; r++ {
+		row := t.viewRow(r)
+		var c0, c1 int
+		if block {
+			c0, c1 = minCol, maxCol
+		} else {
+			if startRow == endRow {
+				c0, c1 = from.Col, to.Col
+			} else if r == startRow {
+				c0, c1 = from.Col, cols
+			} else if r == endRow {
+				c0, c1 = 0, to.Col
+			} else {
+				c0, c1 = 0, cols
+			}
+		}
+		c0 = max(c0, 0)
+		c1 = min(c1, cols)
+		if c0 > c1 {
+			c0 = c1
+		}
+
+		var line []rune
+		for c := c0; c < c1; c++ {
+			cl := CellAt(row.Cells, c)
+			if cl.Rune == 0 {
+				line = append(line, ' ')
+			} else {
+				line = append(line, cl.Rune)
+			}
+		}
+
+		// Trailing blanks are trimmed unless soft-wrapped onto the next row.
+		softWrapped := !block && row.Wrapped && r < endRow
+		if !softWrapped {
+			for len(line) > 0 && line[len(line)-1] == ' ' {
+				line = line[:len(line)-1]
+			}
+		}
+
+		for _, rn := range line {
+			b.WriteRune(rn)
+		}
+
+		if r < endRow {
+			if block || !row.Wrapped {
+				b.WriteByte('\n')
+			}
+		}
+	}
+
+	return b.String()
 }

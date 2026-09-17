@@ -226,6 +226,12 @@ type app struct {
 
 	// Reused between frames: the painted cell backgrounds relayout builds.
 	paint []quad
+
+	// Selection state: in-flight drag, click counter, I-beam cursor, and rects buffer.
+	drag     *pane
+	clicks   clickTracker
+	cursor   *glfw.Cursor
+	selRects []image.Rectangle
 }
 
 func (a *app) newPane() *pane {
@@ -389,6 +395,12 @@ func newApp() (*app, error) {
 	window.SetScrollCallback(func(w *glfw.Window, _, yoff float64) {
 		a.scrollAt(w, yoff)
 	})
+	window.SetMouseButtonCallback(func(w *glfw.Window, button glfw.MouseButton, act glfw.Action, mods glfw.ModifierKey) {
+		a.onMouseButton(w, button, act, mods)
+	})
+	window.SetCursorPosCallback(func(w *glfw.Window, _, _ float64) {
+		a.onCursorPos(w)
+	})
 	window.SetCharCallback(func(_ *glfw.Window, r rune) {
 		a.typed(r)
 	})
@@ -397,6 +409,9 @@ func newApp() (*app, error) {
 		a.windowFocused, a.blinkEpoch = focused, time.Now()
 		a.Damage()
 	})
+
+	a.cursor = glfw.CreateStandardCursor(glfw.IBeamCursor)
+	window.SetCursor(a.cursor)
 
 	a.windowFocused = window.GetAttrib(glfw.Focused) == glfw.True
 	a.blinkEpoch, a.blinkShown = time.Now(), true
@@ -455,10 +470,21 @@ func (a *app) run() error {
 				return err
 			}
 		}
-		// Only a focused window with a live cursor needs a timer. Everything else
-		// blocks outright, so an idle terminal really is idle.
-		if a.blinks() {
-			glfw.WaitEventsTimeout(a.untilNextPhase().Seconds())
+		if a.autoscrollDirection() != 0 {
+			a.autoscroll()
+		}
+		// Only a focused window with a live cursor or an active autoscroll needs a timer.
+		// Everything else blocks outright, so an idle terminal really is idle.
+		auto := a.autoscrollDirection() != 0
+		if auto || a.blinks() {
+			timeout := cursorBlinkPeriod
+			if a.blinks() {
+				timeout = min(timeout, a.untilNextPhase())
+			}
+			if auto {
+				timeout = min(timeout, autoscrollInterval)
+			}
+			glfw.WaitEventsTimeout(timeout.Seconds())
 		} else {
 			glfw.WaitEvents()
 		}
@@ -545,6 +571,10 @@ func (a *app) toShell(b []byte) {
 		return
 	}
 	a.focused.term.Write(b)
+	if a.focused.sel.active {
+		a.focused.sel.clear()
+		a.Damage()
+	}
 	if a.focused.scroll != 0 {
 		a.focused.scroll = 0
 		a.Damage()
@@ -688,15 +718,29 @@ func (a *app) scroll(p *pane, lines int) {
 	}
 }
 
+func (a *app) cursorPt(w *glfw.Window) image.Point {
+	x, y := w.GetCursorPos()
+	sx, sy := framebufferScale(w)
+	return image.Pt(int(x*sx), int(y*sy))
+}
+
+func (a *app) paneAt(w *glfw.Window) (*pane, image.Point) {
+	at := a.cursorPt(w)
+	for _, p := range a.panes {
+		if at.In(p.rect) {
+			return p, at
+		}
+	}
+	return nil, at
+}
+
 // scrollAt scrolls the pane under the mouse, which a terminal does regardless of
 // which pane has the focus.
 func (a *app) scrollAt(w *glfw.Window, yoff float64) {
-	// The cursor comes in window coordinates and pane rects are framebuffer pixels;
-	// on HiDPI those are different numbers.
-	x, y := w.GetCursorPos()
-	sx, sy := framebufferScale(w)
-	at := image.Pt(int(x*sx), int(y*sy))
-
+	p, _ := a.paneAt(w)
+	if p == nil {
+		return
+	}
 	lines := int(yoff * wheelLines)
 	if lines == 0 && yoff != 0 {
 		lines = 1 // a touchpad's fractional notch still has to move something
@@ -704,12 +748,143 @@ func (a *app) scrollAt(w *glfw.Window, yoff float64) {
 			lines = -1
 		}
 	}
-	for _, p := range a.panes {
-		if at.In(p.rect) {
-			a.scroll(p, lines)
-			return
+	a.scroll(p, lines)
+}
+
+func (a *app) onMouseButton(w *glfw.Window, button glfw.MouseButton, act glfw.Action, mods glfw.ModifierKey) {
+	if button != glfw.MouseButtonLeft {
+		return
+	}
+	if act == glfw.Release {
+		if a.drag != nil {
+			a.drag.sel.dragging = false
+			a.drag = nil
+		}
+		return
+	}
+	if act != glfw.Press {
+		return
+	}
+
+	p, at := a.paneAt(w)
+	if p == nil {
+		return
+	}
+	if a.focused != p {
+		a.focused = p
+		a.Damage()
+	}
+
+	cellW, cellH := a.text.CellSize()
+	pos := p.posAt(at, cellW, cellH)
+	count := a.clicks.click(p.id, pos, time.Now())
+
+	for _, other := range a.panes {
+		if other != p && other.sel.active {
+			other.sel.clear()
+			a.Damage()
 		}
 	}
+
+	p.sel.block = mods&glfw.ModAlt != 0
+	p.sel.dragging = true
+
+	switch count {
+	case 1:
+		p.sel.mode = selChar
+		p.sel.anchor = pos
+		p.sel.head = pos
+		p.sel.active = false
+	case 2:
+		p.sel.mode = selWord
+		row, _ := p.cellAt(at, cellW, cellH)
+		var cells []vte.Cell
+		if row >= 0 && row < len(p.frame.Lines) {
+			cells = p.frame.Lines[row].Cells
+		}
+		from, to := wordAt(cells, pos.col, p.cols)
+		p.sel.anchor = selPos{seq: pos.seq, col: from}
+		p.sel.head = selPos{seq: pos.seq, col: to}
+		p.sel.active = true
+	case 3:
+		p.sel.mode = selLine
+		p.sel.anchor = selPos{seq: pos.seq, col: 0}
+		p.sel.head = selPos{seq: pos.seq, col: p.cols}
+		p.sel.active = true
+	}
+	a.drag = p
+	a.Damage()
+}
+
+func (a *app) onCursorPos(w *glfw.Window) {
+	if a.drag == nil {
+		return
+	}
+	a.extendHead(a.cursorPt(w))
+}
+
+func (a *app) extendHead(at image.Point) {
+	if a.drag == nil {
+		return
+	}
+	p := a.drag
+	cellW, cellH := a.text.CellSize()
+	pos := p.posAt(at, cellW, cellH)
+
+	switch p.sel.mode {
+	case selChar:
+		p.sel.head = pos
+		p.sel.active = true
+	case selWord:
+		row, _ := p.cellAt(at, cellW, cellH)
+		var cells []vte.Cell
+		if row >= 0 && row < len(p.frame.Lines) {
+			cells = p.frame.Lines[row].Cells
+		}
+		from, to := wordAt(cells, pos.col, p.cols)
+		if pos.seq > p.sel.anchor.seq || (pos.seq == p.sel.anchor.seq && pos.col >= p.sel.anchor.col) {
+			p.sel.head = selPos{seq: pos.seq, col: to}
+		} else {
+			p.sel.head = selPos{seq: pos.seq, col: from}
+		}
+		p.sel.active = true
+	case selLine:
+		if pos.seq >= p.sel.anchor.seq {
+			p.sel.head = selPos{seq: pos.seq, col: p.cols}
+		} else {
+			p.sel.head = selPos{seq: pos.seq, col: 0}
+		}
+		p.sel.active = true
+	}
+	a.Damage()
+}
+
+const autoscrollInterval = 50 * time.Millisecond
+
+func (a *app) autoscrollDirection() int {
+	if a.drag == nil {
+		return 0
+	}
+	at := a.cursorPt(a.window)
+	pad := px(padding)
+	if at.Y < a.drag.rect.Min.Y+pad {
+		return 1 // scroll back into history
+	}
+	if at.Y > a.drag.rect.Max.Y-pad {
+		return -1 // scroll forward to live tail
+	}
+	return 0
+}
+
+func (a *app) autoscroll() {
+	dir := a.autoscrollDirection()
+	if dir == 0 || a.drag == nil {
+		return
+	}
+	p := a.drag
+	a.scroll(p, dir)
+	p.snap()
+	a.extendHead(a.cursorPt(a.window))
 }
 
 func framebufferScale(w *glfw.Window) (x, y float64) {
@@ -816,6 +991,10 @@ func (a *app) relayout() {
 		a.paint = paintRects(a.paint, p, cellW, cellH)
 	}
 	a.rects.AddQuads(a.paint)
+	for _, p := range a.panes {
+		a.selRects = selectionRects(a.selRects[:0], p, cellW, cellH)
+		a.rects.Add(a.selRects, selectionColor)
+	}
 	a.rects.Add(a.dividers, selectionColor)
 	fills, rims := cursorRects(a.panes, a.focused, cellW, cellH)
 	a.rects.Add(fills, cursorColor)
@@ -958,6 +1137,10 @@ func (a *app) release() {
 	if a.window != nil {
 		a.window.Destroy()
 		a.window = nil
+	}
+	if a.cursor != nil {
+		a.cursor.Destroy()
+		a.cursor = nil
 	}
 	glfw.Terminate()
 }

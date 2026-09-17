@@ -121,6 +121,7 @@ func (s *screen) put(r rune) {
 	}
 	if s.wrapNext {
 		if s.autowrap {
+			s.lines[s.curRow].Wrapped = true
 			s.curCol = 0
 			s.lineFeed()
 		}
@@ -282,6 +283,9 @@ func (s *screen) eraseInDisplay(mode int) {
 
 func (s *screen) fillRange(row, from, to int) {
 	l := &s.lines[row]
+	if to >= s.cols {
+		l.Wrapped = false
+	}
 	e := s.erased()
 	for i := max(from, 0); i < min(to, len(l.Cells)); i++ {
 		l.Cells[i] = e

@@ -526,6 +526,9 @@ func (t *text) Layout(panes []*pane, focused *pane, runs []chrome) {
 				k := t.fm.Resolve(styleOf(cl), gid, cl.Rune)
 				u, v := a.Ensure(k)
 				c, _ := cellColors(cl)
+				if p.sel.contains(row.Seq, col) {
+					c = foreground
+				}
 				if unfocused {
 					// Dim the ink and leave the paint: brightness is the focus cue, and
 					// darkening a background only makes it look like a hole.

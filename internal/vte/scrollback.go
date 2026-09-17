@@ -38,6 +38,7 @@ func (s *scrollback) append(src *Row) {
 	}
 	r.Cells = append(r.Cells[:0], TrimBlanks(src.Cells)...)
 	r.Gen = src.Gen
+	r.Wrapped = src.Wrapped
 }
 
 // reset drops the history, as ED 3 asks. retired survives it: a line number that has been

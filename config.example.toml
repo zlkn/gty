@@ -56,6 +56,8 @@ new_tab   = "ctrl+shift+t"
 close_tab = "ctrl+shift+backspace"
 next_tab  = "ctrl+tab"
 prev_tab  = "ctrl+shift+tab"
+copy      = "ctrl+shift+c"
+paste     = "ctrl+shift+v"
 
 # goto_tab_1 through goto_tab_9 jump straight to a tab; the rest follow this one
 goto_tab_1 = "ctrl+shift+1"

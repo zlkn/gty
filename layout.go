@@ -45,6 +45,7 @@ type pane struct {
 
 	scroll  int    // lines back from the newest; 0 = pinned to the tail
 	retired uint64 // what the terminal had shed when scroll was last adjusted; see follow
+	sel     selection
 
 	// shown folds DECTCEM, the blink phase and the focus into one bit. text.Layout and the
 	// rect quads must read the same value, or a cell goes blank.
@@ -110,6 +111,31 @@ func (p *pane) cursorCell(cellW, cellH int) (image.Rectangle, bool) {
 	x := p.rect.Min.X + pad + col*cellW
 	y := p.rect.Min.Y + pad + row*cellH
 	return image.Rect(x, y, x+cellW, y+cellH), true
+}
+
+// cellAt maps framebuffer px back to (row, col) inside the pane.
+// row is clamped to [0, len(p.frame.Lines)-1] and col is clamped to [0, p.cols].
+func (p *pane) cellAt(at image.Point, cellW, cellH int) (row, col int) {
+	if cellW <= 0 || cellH <= 0 || len(p.frame.Lines) == 0 {
+		return 0, 0
+	}
+	pad := px(padding)
+	row = (at.Y - p.rect.Min.Y - pad) / cellH
+	row = min(max(row, 0), len(p.frame.Lines)-1)
+
+	col = (at.X - p.rect.Min.X - pad) / cellW
+	col = min(max(col, 0), p.cols)
+	return row, col
+}
+
+// posAt returns the selPos for the cell under at.
+func (p *pane) posAt(at image.Point, cellW, cellH int) selPos {
+	row, col := p.cellAt(at, cellW, cellH)
+	var seq uint64
+	if row >= 0 && row < len(p.frame.Lines) {
+		seq = p.frame.Lines[row].Seq
+	}
+	return selPos{seq: seq, col: col}
 }
 
 // cursorQuads is the filled shape a focused pane draws in its cursor cell.
@@ -206,6 +232,55 @@ func cursorRects(panes []*pane, focused *pane, cellW, cellH int) (fills, rims []
 	return fills, rims
 }
 
+// selectionRects appends one coalesced rectangle per visible row covered by p's selection.
+func selectionRects(dst []image.Rectangle, p *pane, cellW, cellH int) []image.Rectangle {
+	if p.sel.empty() || len(p.frame.Lines) == 0 || cellW <= 0 || cellH <= 0 {
+		return dst
+	}
+	lo, hi := p.sel.ordered()
+	pad := px(padding)
+	x0, y0 := p.rect.Min.X+pad, p.rect.Min.Y+pad
+
+	minCol, maxCol := lo.col, hi.col
+	if p.sel.block {
+		minCol, maxCol = min(lo.col, hi.col), max(lo.col, hi.col)
+	}
+
+	for i, line := range p.frame.Lines {
+		seq := line.Seq
+		if seq < lo.seq || seq > hi.seq {
+			continue
+		}
+
+		var c0, c1 int
+		if p.sel.block {
+			c0, c1 = minCol, maxCol
+		} else {
+			if lo.seq == hi.seq {
+				c0, c1 = lo.col, hi.col
+			} else if seq == lo.seq {
+				c0, c1 = lo.col, p.cols
+			} else if seq == hi.seq {
+				c0, c1 = 0, hi.col
+			} else {
+				c0, c1 = 0, p.cols
+			}
+		}
+
+		c0 = min(max(c0, 0), p.cols)
+		c1 = min(max(c1, 0), p.cols)
+		if c0 >= c1 {
+			continue
+		}
+
+		y := y0 + i*cellH
+		x := x0 + c0*cellW
+		w := (c1 - c0) * cellW
+		dst = append(dst, image.Rect(x, y, x+w, y+cellH))
+	}
+	return dst
+}
+
 // setGrid takes the grid from a layout pass and refits the terminal to it.
 //
 // Only on a real change: a layout pass runs on every damaged frame, and a resize costs a
@@ -218,6 +293,9 @@ func (p *pane) setGrid(cols, rows int) {
 	p.cache.reset()
 	p.term.Resize(cols, rows)
 	p.scroll = min(p.scroll, p.term.MaxScroll())
+	if !p.sel.dragging {
+		p.sel.clear()
+	}
 }
 
 // release ends the pane's shell. Safe to call twice.

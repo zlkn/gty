@@ -152,6 +152,8 @@ func (t *Terminal) setModes(params []int, on bool) {
 			t.appKeypad = on
 		case 47, 1047, 1049:
 			t.useAlt(on, m == 1049)
+		case 2004: // bracketed paste
+			t.bracketedPaste = on
 		}
 	}
 }

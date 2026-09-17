@@ -14,6 +14,10 @@ type Row struct {
 	// Gen counts edits and never goes back. Zero is a line never written, which a view can
 	// read as nothing to reuse.
 	Gen uint64
+
+	// Wrapped is true when the line soft-wrapped onto the next one because output reached
+	// the right margin, so copying joins it to its successor without a newline.
+	Wrapped bool
 }
 
 // touch marks the line edited. A caller writing a run of cells touches once at the end.
@@ -29,6 +33,7 @@ func (r *Row) fill(cols int, c Cell) {
 	for i := range r.Cells {
 		r.Cells[i] = c
 	}
+	r.Wrapped = false
 	r.touch()
 }
 

@@ -13,6 +13,8 @@ import (
 	"strings"
 
 	"github.com/go-gl/glfw/v3.4/glfw"
+
+	"gty/internal/vte"
 )
 
 // action is one of the things the window manager does itself, as opposed to the far
@@ -37,6 +39,8 @@ const (
 	actionCloseTab
 	actionNextTab
 	actionPrevTab
+	actionCopy
+	actionPaste
 
 	// goto_tab_1 through goto_tab_9, named and bound in init rather than written out.
 	actionGotoTab1
@@ -64,6 +68,8 @@ var actionNames = map[string]action{
 	"close_tab":        actionCloseTab,
 	"next_tab":         actionNextTab,
 	"prev_tab":         actionPrevTab,
+	"copy":             actionCopy,
+	"paste":            actionPaste,
 }
 
 // keybinds is the live table, and these are the defaults. Ctrl+Shift is nearly all of it
@@ -88,6 +94,9 @@ var keybinds = map[action]chord{
 
 	actionNextTab: {glfw.KeyTab, glfw.ModControl},
 	actionPrevTab: {glfw.KeyTab, glfw.ModControl | glfw.ModShift},
+
+	actionCopy:  {glfw.KeyC, glfw.ModControl | glfw.ModShift},
+	actionPaste: {glfw.KeyV, glfw.ModControl | glfw.ModShift},
 }
 
 // Ctrl+Shift+N rather than the Alt+N other terminals use, to keep to the one modifier
@@ -144,11 +153,52 @@ func (a *app) dispatch(act action) {
 		a.cycleTab(1)
 	case actionPrevTab:
 		a.cycleTab(-1)
+	case actionCopy:
+		a.copySelection()
+	case actionPaste:
+		a.pasteClipboard()
 	default:
 		if act >= actionGotoTab1 && act < numActions {
 			a.gotoTab(int(act - actionGotoTab1))
 		}
 	}
+}
+
+func (a *app) copySelection() {
+	if a.focused == nil || a.focused.sel.empty() {
+		return
+	}
+	p := a.focused
+	lo, hi := p.sel.ordered()
+	text := p.term.Text(vte.Pos{Seq: lo.seq, Col: lo.col}, vte.Pos{Seq: hi.seq, Col: hi.col}, p.sel.block)
+	if text != "" {
+		glfw.SetClipboardString(text)
+	}
+}
+
+func (a *app) pasteClipboard() {
+	if a.focused == nil {
+		return
+	}
+	str := glfw.GetClipboardString()
+	if str == "" {
+		return
+	}
+
+	// Normalise CRLF and LF to CR (Enter is CR on a pty).
+	str = strings.ReplaceAll(str, "\r\n", "\r")
+	str = strings.ReplaceAll(str, "\n", "\r")
+
+	var payload []byte
+	if a.focused.term.BracketedPaste() {
+		payload = make([]byte, 0, len(str)+12)
+		payload = append(payload, "\x1b[200~"...)
+		payload = append(payload, str...)
+		payload = append(payload, "\x1b[201~"...)
+	} else {
+		payload = []byte(str)
+	}
+	a.toShell(payload)
 }
 
 // chord is a key and the modifiers held with it. Matching is exact: ctrl+shift+pageup is

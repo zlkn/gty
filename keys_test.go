@@ -97,6 +97,8 @@ func TestDefaultKeybinds(t *testing.T) {
 		"close_tab":        "ctrl+shift+backspace",
 		"next_tab":         "ctrl+tab",
 		"prev_tab":         "ctrl+shift+tab",
+		"copy":             "ctrl+shift+c",
+		"paste":            "ctrl+shift+v",
 	}
 	// The nine digits, which keys.go binds in a loop for the same reason.
 	for i := range numTabKeys {
