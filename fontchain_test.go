@@ -32,8 +32,10 @@ func TestFontChainDefault(t *testing.T) {
 	if fm.Family != embeddedFamily {
 		t.Errorf("primary is %q, want the embedded %q", fm.Family, embeddedFamily)
 	}
-	if fm.NumFaces() != font.NumStyles {
-		t.Errorf("%d faces loaded, want %d — the chain should start empty", fm.NumFaces(), font.NumStyles)
+	// The four styles and the icon face; the fallback chain itself starts empty.
+	if fm.NumFaces() != font.NumStyles+1 {
+		t.Errorf("%d faces loaded, want %d — the chain should start empty",
+			fm.NumFaces(), font.NumStyles+1)
 	}
 	// The finder is wired: the dingbat is in none of the four faces.
 	if key := fm.Resolve(font.Regular, 0, '✔'); key.GID == 0 {
@@ -115,9 +117,9 @@ func TestFontChainIgnoresTheEmbeddedNameCase(t *testing.T) {
 	}
 	defer fm.Close()
 
-	if fm.Family != embeddedFamily || fm.NumFaces() != font.NumStyles {
+	if fm.Family != embeddedFamily || fm.NumFaces() != font.NumStyles+1 {
 		t.Errorf("primary %q with %d faces, want the embedded family with %d",
-			fm.Family, fm.NumFaces(), font.NumStyles)
+			fm.Family, fm.NumFaces(), font.NumStyles+1)
 	}
 }
 

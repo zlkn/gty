@@ -18,7 +18,6 @@ import (
 	"github.com/oliverbestmann/webgpu/wgpu"
 	"github.com/oliverbestmann/webgpu/wgpuglfw"
 
-	"gty/internal/font"
 	"gty/internal/vte"
 )
 
@@ -37,13 +36,8 @@ var (
 	// which is what the theme derives from — the driver need not offer either kind.
 	fontBlend = blendGamma
 
-	// fontIconScale is the share of the cell's height an icon is scaled to fill; zero
-	// leaves icons at the size the face draws them. Read when the renderer is built,
-	// not in refreshTheme: it decides the atlas geometry, which is laid out once.
-	fontIconScale = font.DefaultIconFill
-
 	// fontBoxDrawing draws the frames and blocks ourselves. Read when the renderer is
-	// built, like fontIconScale.
+	// built, not in refreshTheme: it decides the atlas geometry, which is laid out once.
 	fontBoxDrawing = true
 
 	// fontHinting runs the face's own bytecode over its outlines, snapping their horizontal

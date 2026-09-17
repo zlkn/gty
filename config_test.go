@@ -22,13 +22,13 @@ func keepConfig(t *testing.T) {
 	t.Helper()
 	bg, fg, sel, named := backgroundRGBA, foreground, selectionColor, base16
 	tint, shape := cursorTint, cursorShapeDefault
-	family, size, gamma, icons := fontFamily, fontSize, fontGamma, fontIconScale
+	family, size, gamma := fontFamily, fontSize, fontGamma
 	boxes, frame, blend := fontBoxDrawing, windowDecorations, fontBlend
 	binds, bound := maps.Clone(keybinds), maps.Clone(boundKeys)
 	t.Cleanup(func() {
 		backgroundRGBA, foreground, selectionColor, base16 = bg, fg, sel, named
 		cursorTint, cursorShapeDefault = tint, shape
-		fontFamily, fontSize, fontGamma, fontIconScale = family, size, gamma, icons
+		fontFamily, fontSize, fontGamma = family, size, gamma
 		fontBoxDrawing, windowDecorations = boxes, frame
 		fontBlend, blendUsed = blend, blend
 		keybinds, boundKeys = binds, bound
@@ -167,7 +167,7 @@ func TestLoadConfigFont(t *testing.T) {
 	keepConfig(t)
 
 	if err := loadConfig(writeConfig(t,
-		"[font]\nfamily = \"Iosevka\"\nsize = 13.5\ngamma = 2\nicon_scale = 0.6\nbox_drawing = false\nblend = \"linear\"\n")); err != nil {
+		"[font]\nfamily = \"Iosevka\"\nsize = 13.5\ngamma = 2\nbox_drawing = false\nblend = \"linear\"\n")); err != nil {
 		t.Fatal(err)
 	}
 	if fontFamily != "Iosevka" {
@@ -182,9 +182,6 @@ func TestLoadConfigFont(t *testing.T) {
 	// The knob overrides the theme, and the exponent is its reciprocal.
 	if coverageExp != 0.5 {
 		t.Errorf("coverage exponent is %v, want 0.5", coverageExp)
-	}
-	if fontIconScale != 0.6 {
-		t.Errorf("icon_scale is %v, want 0.6", fontIconScale)
 	}
 	if fontBoxDrawing {
 		t.Error("box_drawing = false left the frames drawn here")
@@ -300,10 +297,6 @@ func TestLoadConfigErrors(t *testing.T) {
 		{"gamma at zero", "[font]\ngamma = 0\n", "font.gamma"},
 		{"gamma out of range", "[font]\ngamma = 12\n", "font.gamma"},
 		{"size out of range", "[font]\nsize = 0\n", "font.size"},
-		// Zero is deliberately absent: unlike gamma, it is a legal icon_scale and means
-		// "leave icons at the size the face draws them".
-		{"icon scale negative", "[font]\nicon_scale = -0.5\n", "font.icon_scale"},
-		{"icon scale past one", "[font]\nicon_scale = 1.5\n", "font.icon_scale"},
 		{"box_drawing is not a bool", "[font]\nbox_drawing = \"yes\"\n", "box_drawing"},
 		{"unknown cursor shape", "[cursor]\nshape = \"beam\"\n", `cursor.shape is "beam", want one of bar block underline`},
 		{"cursor shape is not a string", "[cursor]\nshape = 7\n", "shape"},

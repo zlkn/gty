@@ -4,7 +4,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strings"
 	"testing"
 
 	"golang.org/x/image/font/sfnt"
@@ -52,6 +51,13 @@ const (
 	generalFaceName = "DejaVuSansMono.ttf"
 )
 
+// testIconFace is where icons come from: the same family's wide variant, whose icons are
+// drawn half again a cell across instead of squeezed into one. See Options.Icons.
+const (
+	testIconFace = "../../assets/JetBrainsMonoNerdFont-Light.ttf"
+	iconFaceName = "JetBrainsMonoNerdFont-Light.ttf"
+)
+
 func readFace(t *testing.T, path string) []byte {
 	t.Helper()
 	ttf, err := os.ReadFile(path)
@@ -89,8 +95,8 @@ func testOptions(t *testing.T) Options {
 	return Options{
 		Styles: styles, Family: "Monospace",
 		Size: testSize, DPI: testDPI, MaxTexture: testMaxTexture,
-		IconFill: DefaultIconFill,
-		Warn:     func(msg string) { t.Log("warn:", msg) },
+		Icons: source(t, testIconFace),
+		Warn:  func(msg string) { t.Log("warn:", msg) },
 	}
 }
 
@@ -225,7 +231,8 @@ func TestFallbackFacesFitTheGrid(t *testing.T) {
 	o.Fallback = []Source{source(t, testSymbolFace), source(t, testGeneralFace)}
 	fm := newManager(t, o)
 
-	if got, want := fm.NumFaces(), NumStyles+len(o.Fallback); got != want {
+	// The chain, plus the icon face appended after it.
+	if got, want := fm.NumFaces(), NumStyles+len(o.Fallback)+1; got != want {
 		t.Fatalf("%d faces loaded, want %d", got, want)
 	}
 	for face := Fallback; int(face) < fm.NumFaces(); face++ {
@@ -274,15 +281,15 @@ func TestResolveWalksTheFallbackChain(t *testing.T) {
 		t.Errorf("the finder was asked %d times for a rune the family has", finder.calls)
 	}
 
-	// The name says which link answered; the index no longer does, because an icon comes
-	// from a twin appended after the chain.
+	// An icon skips the chain entirely: the icon face is asked before the family is, let
+	// alone the faces behind it.
 	icon := fm.Resolve(Italic, 0, testIcon)
-	if icon.GID == 0 || !strings.HasPrefix(fm.FaceName(icon.Style), symbolFaceName) {
-		t.Errorf("%U resolved to %s (%q) glyph %d, want the symbol face in the loaded chain",
+	if icon.GID == 0 || fm.FaceName(icon.Style) != iconFaceName {
+		t.Errorf("%U resolved to %s (%q) glyph %d, want the icon face",
 			rune(testIcon), icon.Style, fm.FaceName(icon.Style), icon.GID)
 	}
 	if finder.calls != 0 {
-		t.Errorf("the finder was asked for %U, which the chain already had", rune(testIcon))
+		t.Errorf("the finder was asked for %U, which the icon face had", rune(testIcon))
 	}
 
 	// Past the end of the chain: the finder is asked, and its face joins the chain.
@@ -291,7 +298,7 @@ func TestResolveWalksTheFallbackChain(t *testing.T) {
 		t.Errorf("%U resolved to %s (%q) glyph %d, want the face the finder offered",
 			rune(testDingbat), dingbat.Style, fm.FaceName(dingbat.Style), dingbat.GID)
 	}
-	// The family, the symbol face, its icon twin, and the finder's face.
+	// The family, the symbol face, the icon face, and the finder's.
 	if fm.NumFaces() != NumStyles+3 {
 		t.Errorf("%d faces after the finder answered, want %d", fm.NumFaces(), NumStyles+3)
 	}
@@ -358,10 +365,10 @@ func TestResolveSkipsAFaceItCannotDraw(t *testing.T) {
 	if got := fm.FaceName(key.Style); got != "general" {
 		t.Errorf("%U came from %q, want the general face", rune(testDingbat), got)
 	}
-	// Only the face that answered joins the chain.
-	if fm.NumFaces() != NumStyles+1 {
+	// Only the face that answered joins the chain, beside the icon face.
+	if fm.NumFaces() != NumStyles+2 {
 		t.Errorf("%d faces loaded, want %d — a candidate that could not draw was kept",
-			fm.NumFaces(), NumStyles+1)
+			fm.NumFaces(), NumStyles+2)
 	}
 }
 
@@ -387,9 +394,12 @@ func TestPromptRunesResolve(t *testing.T) {
 	}
 }
 
-// TestManagerWithoutFallback: both are optional, and leaving them out costs nothing else.
+// TestManagerWithoutFallback: the chain, the finder and the icon face are all optional,
+// and leaving them out costs nothing else.
 func TestManagerWithoutFallback(t *testing.T) {
-	fm := newManager(t, testOptions(t))
+	o := testOptions(t)
+	o.Icons = Source{}
+	fm := newManager(t, o)
 
 	if fm.NumFaces() != NumStyles {
 		t.Errorf("%d faces loaded with no chain, want %d", fm.NumFaces(), NumStyles)
@@ -451,10 +461,10 @@ func TestIsIconRune(t *testing.T) {
 	}
 }
 
-// TestIconFaceIsOnlyTheTwin: the renderer asks by face which glyphs to leave at the
-// coverage they were rasterised with, so nothing but the twin may answer yes — a fallback
-// draws text and wants the same darkening as the family.
-func TestIconFaceIsOnlyTheTwin(t *testing.T) {
+// TestIconFaceIsOnlyTheIconFace: the renderer asks by face which glyphs to leave at the
+// coverage they were rasterised with, so nothing but the icon face may answer yes — a
+// fallback draws text and wants the same darkening as the family.
+func TestIconFaceIsOnlyTheIconFace(t *testing.T) {
 	o := testOptions(t)
 	o.Fallback = []Source{source(t, testGeneralFace)}
 	fm := newManager(t, o)
@@ -463,17 +473,17 @@ func TestIconFaceIsOnlyTheTwin(t *testing.T) {
 	if !ok {
 		t.Fatalf("the family has no %U", rune(testIcon))
 	}
-	twin := fm.Resolve(Regular, gid, testIcon).Style
-	if !fm.IconFace(twin) {
-		t.Errorf("the twin %s says it is not an icon face", twin)
+	icons := fm.Resolve(Regular, gid, testIcon).Style
+	if !fm.IconFace(icons) {
+		t.Errorf("the icon face %s says it is not one", icons)
 	}
-	// The dingbat pulls the fallback into the chain, so the loop sees a fitted face that
-	// is not a twin — the case a check on fitted alone would get wrong.
-	if got := fm.Resolve(Regular, 0, testDingbat).Style; got == twin {
-		t.Fatalf("%U came from the twin %s", rune(testDingbat), got)
+	// The dingbat comes from the chain, so the loop sees a fitted face that is not the
+	// icon face — the case a check on fitted alone would get wrong.
+	if got := fm.Resolve(Regular, 0, testDingbat).Style; got == icons {
+		t.Fatalf("%U came from the icon face %s", rune(testDingbat), got)
 	}
 	for s := Style(0); int(s) < fm.NumFaces(); s++ {
-		if s != twin && fm.IconFace(s) {
+		if s != icons && fm.IconFace(s) {
 			t.Errorf("%s (%s) says it is an icon face", s, fm.FaceName(s))
 		}
 	}
@@ -482,9 +492,9 @@ func TestIconFaceIsOnlyTheTwin(t *testing.T) {
 	}
 }
 
-// TestIconTwinIsSharedAndStyleless: an icon has no italic, so all four styles share one
-// twin, built once.
-func TestIconTwinIsSharedAndStyleless(t *testing.T) {
+// TestIconsAreStyleless: an icon has no bold or italic, so all four styles draw it from the
+// one face, and a second icon costs a slot rather than a face.
+func TestIconsAreStyleless(t *testing.T) {
 	fm := newManager(t, testOptions(t))
 
 	gid, ok := fm.GlyphIndex(Regular, testIcon)
@@ -493,7 +503,7 @@ func TestIconTwinIsSharedAndStyleless(t *testing.T) {
 	}
 	regular := fm.Resolve(Regular, gid, testIcon)
 	if regular.Style < Fallback {
-		t.Fatalf("%U came from %s, want a twin appended past the styles", rune(testIcon), regular.Style)
+		t.Fatalf("%U came from %s, want the face appended past the styles", rune(testIcon), regular.Style)
 	}
 	for _, style := range []Style{Bold, Italic, BoldItalic} {
 		if got := fm.Resolve(style, gid, testIcon); got != regular {
@@ -501,20 +511,19 @@ func TestIconTwinIsSharedAndStyleless(t *testing.T) {
 		}
 	}
 
-	// A second icon from the same face reuses the twin rather than adding another.
 	before := fm.NumFaces()
 	other, ok := fm.GlyphIndex(Regular, 0xF07B)
 	if !ok {
 		t.Fatal("the family has no U+F07B")
 	}
 	if got := fm.Resolve(Regular, other, 0xF07B); got.Style != regular.Style {
-		t.Errorf("a second icon came from %s, want the same twin %s", got.Style, regular.Style)
+		t.Errorf("a second icon came from %s, want the same face %s", got.Style, regular.Style)
 	}
 	if fm.NumFaces() != before {
 		t.Errorf("%d faces after a second icon, want %d", fm.NumFaces(), before)
 	}
-	if name := fm.FaceName(regular.Style); !strings.HasSuffix(name, "icons") {
-		t.Errorf("the twin is called %q, want it named after the face it doubles", name)
+	if name := fm.FaceName(regular.Style); name != iconFaceName {
+		t.Errorf("the icon face is called %q, want %q", name, iconFaceName)
 	}
 }
 

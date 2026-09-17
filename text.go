@@ -26,6 +26,11 @@ var (
 	italicTTF []byte
 	//go:embed assets/JetBrainsMonoNerdFontMono-MediumItalic.ttf
 	boldItalicTTF []byte
+
+	// The same family's wide variant, carrying the icons at the size a terminal draws
+	// them. Only its icons are reached for; see font.Options.Icons.
+	//go:embed assets/JetBrainsMonoNerdFont-Light.ttf
+	iconTTF []byte
 )
 
 const embeddedFamily = "JetBrains Mono"
@@ -228,7 +233,7 @@ func newFontManager(sizePt, scale float64, maxTexture int) (*font.FontManager, e
 		// The display's scale rides in on the DPI: ppem is Size*DPI/72, so the same
 		// point size rasterises at twice the pixels on a 2x panel.
 		Size: sizePt, DPI: baseDPI * scale, MaxTexture: maxTexture,
-		IconFill:   fontIconScale,
+		Icons:      font.Source{Name: embeddedFamily + " icons", TTF: iconTTF},
 		BoxDrawing: fontBoxDrawing,
 		Hinting:    fontHinting,
 		Warn:       warn,
