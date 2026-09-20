@@ -390,6 +390,63 @@ func nextPane(panes []*pane, focused *pane) *pane {
 	return focused
 }
 
+// side is one of the four directions the focus moves in.
+type side uint8
+
+const (
+	sideLeft side = iota
+	sideDown
+	sideUp
+	sideRight
+)
+
+// paneTowards is where the focus lands moving from focused in direction s: of the panes
+// that begin past focused's edge on that axis, the nearest, and among equally near ones
+// the one sharing the most of focused's span across the other axis. Overlap rather than
+// the distance between centres, so a tall pane beside two short ones is reached from
+// either of them; an even share goes to the topmost or leftmost, so the same key from the
+// same pane always lands in the same place. Returns focused when there is nothing that way.
+func paneTowards(panes []*pane, focused *pane, s side) *pane {
+	if focused == nil {
+		return nil
+	}
+	r := focused.rect
+	best, bestGap, bestShare, bestEdge := focused, 0, 0, 0
+	for _, p := range panes {
+		if p == focused {
+			continue
+		}
+		q := p.rect
+		var gap, share, edge int
+		switch s {
+		case sideLeft:
+			gap, share, edge = r.Min.X-q.Max.X, shared(r.Min.Y, r.Max.Y, q.Min.Y, q.Max.Y), q.Min.Y
+		case sideRight:
+			gap, share, edge = q.Min.X-r.Max.X, shared(r.Min.Y, r.Max.Y, q.Min.Y, q.Max.Y), q.Min.Y
+		case sideUp:
+			gap, share, edge = r.Min.Y-q.Max.Y, shared(r.Min.X, r.Max.X, q.Min.X, q.Max.X), q.Min.X
+		case sideDown:
+			gap, share, edge = q.Min.Y-r.Max.Y, shared(r.Min.X, r.Max.X, q.Min.X, q.Max.X), q.Min.X
+		}
+		// A divider sits between neighbours, so the gap is its width and not zero.
+		// Panes that only touch at a corner share nothing and are not neighbours.
+		if gap < 0 || share <= 0 {
+			continue
+		}
+		better := best == focused || gap < bestGap
+		if !better && gap == bestGap {
+			better = share > bestShare || (share == bestShare && edge < bestEdge)
+		}
+		if better {
+			best, bestGap, bestShare, bestEdge = p, gap, share, edge
+		}
+	}
+	return best
+}
+
+// shared is how much of [alo, ahi) and [blo, bhi) overlaps.
+func shared(alo, ahi, blo, bhi int) int { return min(ahi, bhi) - max(alo, blo) }
+
 // layoutTree gives every pane its rect and grid, and returns the leaves in layout
 // order — the order Ctrl+Tab walks — with the dividers between them.
 func layoutTree(root *node, r image.Rectangle, cellW, cellH int) (panes []*pane, dividers []image.Rectangle) {

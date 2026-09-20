@@ -952,6 +952,18 @@ func (a *app) focusNext() {
 	a.Damage() // the dimming and the cursor are baked into the instance buffers
 }
 
+// focusTowards moves the focus to the neighbouring pane one way. Nothing that way
+// leaves the focus where it is: wrapping around would send it across the window, which
+// is not what a direction key reads as.
+func (a *app) focusTowards(s side) {
+	next := paneTowards(a.panes, a.focused, s)
+	if next == a.focused {
+		return
+	}
+	a.focused = next
+	a.Damage()
+}
+
 // page is a Shift+PageUp step. Never zero: a pane with one row would otherwise take
 // the key and do nothing, and a pane with none would scroll backwards.
 func (a *app) page() int { return max(1, a.focused.rows-1) }

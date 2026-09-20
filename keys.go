@@ -31,6 +31,10 @@ const (
 	actionSplitHorizontal
 	actionClosePane
 	actionFocusNext
+	actionFocusLeft
+	actionFocusDown
+	actionFocusUp
+	actionFocusRight
 	actionScrollPageUp
 	actionScrollPageDown
 	actionScrollLineUp
@@ -60,6 +64,10 @@ var actionNames = map[string]action{
 	"split_horizontal": actionSplitHorizontal,
 	"close_pane":       actionClosePane,
 	"focus_next":       actionFocusNext,
+	"focus_left":       actionFocusLeft,
+	"focus_down":       actionFocusDown,
+	"focus_up":         actionFocusUp,
+	"focus_right":      actionFocusRight,
 	"scroll_page_up":   actionScrollPageUp,
 	"scroll_page_down": actionScrollPageDown,
 	"scroll_line_up":   actionScrollLineUp,
@@ -85,6 +93,10 @@ var keybinds = map[action]chord{
 	actionSplitHorizontal: {glfw.KeyE, glfw.ModControl | glfw.ModShift},
 	actionClosePane:       {glfw.KeyW, glfw.ModControl | glfw.ModShift},
 	actionFocusNext:       {glfw.KeyO, glfw.ModAlt},
+	actionFocusLeft:       {glfw.KeyH, glfw.ModAlt},
+	actionFocusDown:       {glfw.KeyJ, glfw.ModAlt},
+	actionFocusUp:         {glfw.KeyK, glfw.ModAlt},
+	actionFocusRight:      {glfw.KeyL, glfw.ModAlt},
 	actionScrollPageUp:    {glfw.KeyPageUp, glfw.ModShift},
 	actionScrollPageDown:  {glfw.KeyPageDown, glfw.ModShift},
 	actionScrollLineUp:    {glfw.KeyUp, glfw.ModControl | glfw.ModShift},
@@ -137,6 +149,14 @@ func (a *app) dispatch(act action) {
 		a.closePane(a.focused)
 	case actionFocusNext:
 		a.focusNext()
+	case actionFocusLeft:
+		a.focusTowards(sideLeft)
+	case actionFocusDown:
+		a.focusTowards(sideDown)
+	case actionFocusUp:
+		a.focusTowards(sideUp)
+	case actionFocusRight:
+		a.focusTowards(sideRight)
 	case actionScrollPageUp:
 		a.scrollFocused(a.page())
 	case actionScrollPageDown:

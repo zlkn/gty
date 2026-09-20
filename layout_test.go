@@ -289,3 +289,41 @@ func TestLayoutScaled(t *testing.T) {
 		}
 	}
 }
+
+// TestPaneTowards: a direction key lands on the pane sharing the edge it is sent at, and
+// leaves the focus alone when there is none. The layout here is pane 1 down the left,
+// panes 2 over 3 on the right.
+func TestPaneTowards(t *testing.T) {
+	one, two, three := newPane(1), newPane(2), newPane(3)
+	root := &node{pane: one}
+	root.split(one, vertical, two)
+	root.split(two, horizontal, three)
+
+	// An odd height so the divider leaves the right column's two panes exactly equal,
+	// and the even-share case below is the tie-break rather than a rounding artefact.
+	panes, _ := layoutTree(root, image.Rect(0, 0, 900, 601), testCellW, testCellH)
+	if len(panes) != 3 {
+		t.Fatalf("got %d panes, want 3", len(panes))
+	}
+
+	for _, tc := range []struct {
+		name string
+		from *pane
+		s    side
+		want int
+	}{
+		{"left from the top right", two, sideLeft, 1},
+		{"left from the bottom right", three, sideLeft, 1},
+		{"down the right column", two, sideDown, 3},
+		{"up the right column", three, sideUp, 2},
+		{"nothing above the left pane", one, sideUp, 1},
+		{"nothing right of the right column", two, sideRight, 2},
+		// Both right-hand panes are equally near and share equally much of the left
+		// pane's span, so the tie-break takes it to the top one.
+		{"right from the left pane", one, sideRight, 2},
+	} {
+		if got := paneTowards(panes, tc.from, tc.s); got.id != tc.want {
+			t.Errorf("%s: landed on pane %d, want %d", tc.name, got.id, tc.want)
+		}
+	}
+}
