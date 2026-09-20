@@ -239,6 +239,24 @@ func TestKeyBytesAltIsNotPrefixedOnCursorKeys(t *testing.T) {
 	}
 }
 
+// TestKeyBytesShiftTab: back-tab is its own sequence, terminfo's kcbt=\E[Z. Sending a bare
+// tab for it leaves <S-Tab> dead in every application that asked terminfo what to expect.
+func TestKeyBytesShiftTab(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		mods glfw.ModifierKey
+		want string
+	}{
+		{"tab", 0, "\t"},
+		{"kcbt, shift+tab", glfw.ModShift, "\x1b[Z"},
+		{"alt+shift+tab", glfw.ModAlt | glfw.ModShift, "\x1b\x1b[Z"},
+	} {
+		if got := string(keyBytes(glfw.KeyTab, tc.mods, false, false)); got != tc.want {
+			t.Errorf("%s sends %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
 // TestKeyBytesKeypad: in application keypad mode the keypad sends SS3, after terminfo's
 // kpZRO=\EOp and its neighbours. In numeric mode it sends nothing from here — the digit
 // printed on the key reaches the character callback instead, and encoding it twice would

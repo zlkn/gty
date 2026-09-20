@@ -12,11 +12,13 @@ import (
 // inverse already applied — nothing downstream should have to remember it.
 func cellColors(c vte.Cell) (fg, bg [4]float32) {
 	fg, bg = resolveColor(c.FG, foreground), resolveColor(c.BG, backgroundRGBA)
+	// Faint before inverse: the attribute fades the ink the program asked for, and
+	// inverse then trades the two colours as they stand.
+	if c.Attrs&vte.AttrFaint != 0 {
+		fg = mix(fg, bg, faintMix)
+	}
 	if c.Attrs&vte.AttrInverse != 0 {
 		fg, bg = bg, fg
-	}
-	if c.Attrs&vte.AttrFaint != 0 {
-		fg = dim(fg)
 	}
 	return fg, bg
 }

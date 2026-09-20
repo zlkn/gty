@@ -65,6 +65,11 @@ const (
 	// brightness is the whole focus cue.
 	dimFactor = 0.45
 
+	// faintMix is how far SGR 2 fades a cell's ink towards its own background. Towards the
+	// background and not towards black: on light paper darkening the ink leaves faint text
+	// heavier than plain text, which is the opposite of what the attribute asks for.
+	faintMix = 0.55
+
 	cursorBarWidth        = 2
 	cursorUnderlineHeight = 2
 	cursorOutlineWidth    = 1
@@ -686,7 +691,11 @@ func keyBytes(key glfw.Key, mods glfw.ModifierKey, appCursor, appKeypad bool) []
 	case glfw.KeyBackspace:
 		b = []byte{0x7F}
 	case glfw.KeyTab:
-		b = []byte{'\t'}
+		if mods&glfw.ModShift != 0 {
+			b = []byte{0x1B, '[', 'Z'} // kcbt
+		} else {
+			b = []byte{'\t'}
+		}
 	case glfw.KeyEscape:
 		b = []byte{0x1B}
 	default:
