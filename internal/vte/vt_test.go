@@ -480,3 +480,118 @@ func TestAppKeypadMode(t *testing.T) {
 		t.Error("RIS did not return the keypad to numeric")
 	}
 }
+
+// TestInsertMode is IRM: what is on the line moves right rather than being overwritten.
+func TestInsertMode(t *testing.T) {
+	tm := vtTerm(8, 1, "abcd", "\x1b[1G", "\x1b[4h", "XY")
+	if got, want := screenText(tm.scr)[0], "XYabcd"; got != want {
+		t.Errorf("insert mode wrote %q, want %q", got, want)
+	}
+
+	tm.Feed([]byte("\x1b[4l\x1b[1GZ"))
+	if got, want := screenText(tm.scr)[0], "ZYabcd"; got != want {
+		t.Errorf("replace mode wrote %q, want %q", got, want)
+	}
+}
+
+// TestRepeat is REP. It copies the last character printed, and a cursor move in between
+// leaves it nothing to copy.
+func TestRepeat(t *testing.T) {
+	tm := vtTerm(10, 2, "a\x1b[3b")
+	if got, want := screenText(tm.scr)[0], "aaaa"; got != want {
+		t.Errorf("REP produced %q, want %q", got, want)
+	}
+
+	tm = vtTerm(10, 2, "a\x1b[1;5H\x1b[2b")
+	if got, want := screenText(tm.scr)[0], "a"; got != want {
+		t.Errorf("REP after a cursor move produced %q, want %q", got, want)
+	}
+}
+
+// TestTabStops walks the stops a program can move: HTS sets one, TBC clears them, and CHT
+// and CBT count them in both directions.
+func TestTabStops(t *testing.T) {
+	tm := vtTerm(24, 1, "\t")
+	if tm.scr.curCol != 8 {
+		t.Errorf("a tab from column 1 landed on column %d, want 8", tm.scr.curCol+1)
+	}
+
+	// Every stop gone, one put back by hand at column 9.
+	tm.Feed([]byte("\x1b[3g\x1b[9G\x1bH\x1b[1G\t"))
+	if tm.scr.curCol != 8 {
+		t.Errorf("the stop set by HTS moved the cursor to column %d, want 8", tm.scr.curCol)
+	}
+
+	// Nothing beyond it, so the next tab goes as far as it can.
+	tm.Feed([]byte("\t"))
+	if tm.scr.curCol != 23 {
+		t.Errorf("a tab past the last stop landed on column %d, want 23", tm.scr.curCol)
+	}
+
+	tm.Feed([]byte("\x1b[Z"))
+	if tm.scr.curCol != 8 {
+		t.Errorf("CBT landed on column %d, want 8", tm.scr.curCol)
+	}
+	tm.Feed([]byte("\x1b[Z"))
+	if tm.scr.curCol != 0 {
+		t.Errorf("CBT with no stop before it landed on column %d, want 0", tm.scr.curCol)
+	}
+	tm.Feed([]byte("\x1b[2I"))
+	if tm.scr.curCol != 23 {
+		t.Errorf("CHT over one stop and past the end landed on column %d, want 23", tm.scr.curCol)
+	}
+}
+
+// TestSoftReset is DECSTR: the modes go back to their defaults and the screen keeps what is
+// on it.
+func TestSoftReset(t *testing.T) {
+	tm := vtTerm(10, 4, "X", "\x1b[31;1m", "\x1b[2;3r", "\x1b[4h", "\x1b[?25l", "\x1b[?1h")
+	tm.Feed([]byte("\x1b[!p"))
+
+	if tm.scr.pen != (Cell{}) {
+		t.Errorf("the pen is %+v, want a fresh one", tm.scr.pen)
+	}
+	if tm.scr.insert {
+		t.Error("insert mode survived the soft reset")
+	}
+	if tm.scr.top != 0 || tm.scr.bot != 3 {
+		t.Errorf("the region is %d..%d, want the whole screen", tm.scr.top, tm.scr.bot)
+	}
+	if !tm.visible {
+		t.Error("the cursor is still hidden")
+	}
+	if tm.AppCursor() {
+		t.Error("application cursor keys survived the soft reset")
+	}
+	if got, want := screenText(tm.scr)[0], "X"; got != want {
+		t.Errorf("the screen reads %q, want %q — DECSTR does not clear it", got, want)
+	}
+}
+
+// TestLineDrawingCharset is the set ncurses draws a frame with: while it is invoked, "lqk"
+// is a corner run rather than three letters.
+func TestLineDrawingCharset(t *testing.T) {
+	tm := vtTerm(10, 2, "\x1b(0lqk\x1b(Blqk")
+	if got, want := screenText(tm.scr)[0], "┌─┐lqk"; got != want {
+		t.Errorf("designating G0 gave %q, want %q", got, want)
+	}
+
+	// SO and SI switch between the slots without designating anything again.
+	tm = vtTerm(10, 2, "\x1b)0\x0elq\x0flq")
+	if got, want := screenText(tm.scr)[0], "┌─lq"; got != want {
+		t.Errorf("SO and SI gave %q, want %q", got, want)
+	}
+
+	// The designation travels with the cursor, so a program that saves and restores gets
+	// the set it had.
+	tm = vtTerm(10, 2, "\x1b(0\x1b7\x1b(B\x1b8l")
+	if got, want := screenText(tm.scr)[0], "┌"; got != want {
+		t.Errorf("DECRC gave %q, want %q", got, want)
+	}
+
+	// RIS drops it, as it drops everything else.
+	tm = vtTerm(10, 2, "\x1b(0\x1bcl")
+	if got, want := screenText(tm.scr)[0], "l"; got != want {
+		t.Errorf("after RIS the screen reads %q, want %q", got, want)
+	}
+}

@@ -8,7 +8,7 @@ import (
 // Terminal is the parser's sink. Every method here mutates the active screen with the write
 // lock already held; see feed.
 
-func (t *Terminal) putRune(r rune) { t.scr.put(r) }
+func (t *Terminal) putRune(r rune) { t.scr.put(t.scr.translate(r)) }
 
 func (t *Terminal) execute(b byte) {
 	switch b {
@@ -20,6 +20,10 @@ func (t *Terminal) execute(b byte) {
 		t.scr.backspace()
 	case '\t':
 		t.scr.tab()
+	case 0x0E: // SO invokes G1 as GL
+		t.scr.gl = 1
+	case 0x0F: // SI puts G0 back
+		t.scr.gl = 0
 	}
 	// BEL and the rest are dropped. A visual bell is not this milestone's problem.
 }
@@ -27,11 +31,18 @@ func (t *Terminal) execute(b byte) {
 // csi acts on a control sequence. Queries cannot wait: fish probes at every startup and draws
 // nothing until answered, and DA1 is the barrier it hangs on.
 func (t *Terminal) csi(c CSI) {
-	// Of the sequences carrying an intermediate, DECSCUSR (SP q) is the one gty acts on:
-	// it is how vim and neovim mark their modes. The rest are dropped on purpose.
+	// Sequences carrying an intermediate are their own small family. Two of them matter:
+	// DECSCUSR is how vim and neovim mark their modes, and DECSTR is how a program puts the
+	// terminal back before it starts. The rest are dropped on purpose.
 	if len(c.Inter) > 0 {
-		if c.Private == 0 && c.Final == 'q' && len(c.Inter) == 1 && c.Inter[0] == ' ' {
+		if c.Private != 0 || len(c.Inter) != 1 {
+			return
+		}
+		switch inter, final := c.Inter[0], c.Final; {
+		case inter == ' ' && final == 'q': // DECSCUSR
 			t.setCursorStyle(c.Raw(0))
+		case inter == '!' && final == 'p': // DECSTR
+			t.softReset()
 		}
 		return
 	}
@@ -77,6 +88,8 @@ func (t *Terminal) csi(c CSI) {
 		s.moveTo(s.curRow, c.Arg(0, 1)-1)
 	case 'H', 'f':
 		s.moveTo(c.Arg(0, 1)-1, c.Arg(1, 1)-1)
+	case 'I':
+		s.tabForward(c.Arg(0, 1))
 	case 'J':
 		s.eraseInDisplay(c.Raw(0))
 	case 'K':
@@ -97,11 +110,21 @@ func (t *Terminal) csi(c CSI) {
 		}
 	case 'X':
 		s.eraseChars(c.Arg(0, 1))
-	case 'd':
-		s.moveTo(c.Arg(0, 1)-1, s.curCol)
+	case 'Z':
+		s.tabBack(c.Arg(0, 1))
+	case 'b':
+		s.repeat(c.Arg(0, 1))
 	case 'c':
 		// DA1. VT220 (62) speaking ANSI colour (22), which is what TERM already promises.
 		t.reply("\x1b[?62;22c")
+	case 'd':
+		s.moveTo(c.Arg(0, 1)-1, s.curCol)
+	case 'g':
+		s.clearTab(c.Raw(0))
+	case 'h':
+		t.setANSIModes(c.Params, true)
+	case 'l':
+		t.setANSIModes(c.Params, false)
 	case 'm':
 		t.sgr(c)
 	case 'n':
@@ -137,8 +160,29 @@ func (t *Terminal) setCursorStyle(param int) {
 	}
 }
 
+// setANSIModes handles SM and RM, the form without the question mark. Only IRM is acted on:
+// of the four modes in the standard it is the one a full-screen editor uses, and LNM would
+// put a carriage return after every line feed, which no program on a pty wants.
+func (t *Terminal) setANSIModes(params []int, on bool) {
+	for _, m := range params {
+		if m == 4 { // IRM
+			t.scr.insert = on
+		}
+	}
+}
+
+// softReset is DECSTR. The screen keeps its contents; what goes back to the default is
+// everything a program might have changed and cannot be expected to change back.
+func (t *Terminal) softReset() {
+	t.scr.softReset()
+	t.resetMouse()
+	t.shape = t.shapeDefault
+	t.visible = true
+	t.appCursor, t.appKeypad = false, false
+}
+
 // setModes handles DECSET and DECRST. Anything not listed is recognised and ignored:
-// mouse reporting, modifyOtherKeys, the kitty keyboard protocol.
+// modifyOtherKeys, the kitty keyboard protocol, the modes of terminals gty is not.
 func (t *Terminal) setModes(params []int, on bool) {
 	for _, m := range params {
 		switch m {
@@ -152,6 +196,22 @@ func (t *Terminal) setModes(params []int, on bool) {
 			t.appKeypad = on
 		case 47, 1047, 1049:
 			t.useAlt(on, m == 1049)
+		case 9:
+			t.setMouseProto(MouseX10, on)
+		case 1000:
+			t.setMouseProto(MouseNormal, on)
+		case 1002:
+			t.setMouseProto(MouseButton, on)
+		case 1003:
+			t.setMouseProto(MouseAny, on)
+		case 1004:
+			t.focusEvents = on
+		case 1006:
+			t.setMouseEnc(encSGR, on)
+		case 1007:
+			t.altScroll = on
+		case 1015:
+			t.setMouseEnc(encURXVT, on)
 		case 2004: // bracketed paste
 			t.bracketedPaste = on
 		}
@@ -182,7 +242,10 @@ func (t *Terminal) useAlt(on, withCursor bool) {
 
 func (t *Terminal) esc(final byte, inter []byte) {
 	if len(inter) > 0 {
-		return // charset designation and friends
+		if len(inter) == 1 {
+			t.designate(inter[0], final)
+		}
+		return
 	}
 	switch final {
 	case '=': // DECKPAM
@@ -198,13 +261,42 @@ func (t *Terminal) esc(final byte, inter []byte) {
 	case 'E': // NEL
 		t.scr.carriageReturn()
 		t.scr.lineFeed()
+	case 'H': // HTS
+		t.scr.setTab()
 	case 'M': // RI
 		t.scr.reverseIndex()
 	case 'c': // RIS
 		t.useAlt(false, false)
 		t.pri.reset()
+		t.resetMouse()
 		t.shape, t.appCursor, t.appKeypad = t.shapeDefault, false, false
 	}
+}
+
+// designate is ESC ( C and its neighbours: which of the four character-set slots the final
+// byte loads, and with what. Only the DEC line-drawing set is one gty draws differently;
+// everything else is the ordinary run of characters, so it reads as ASCII.
+//
+// ESC % G and the conformance levels fall through: gty is UTF-8 and stays there.
+func (t *Terminal) designate(inter, final byte) {
+	var slot int
+	switch inter {
+	case '(':
+		slot = 0
+	case ')', '-':
+		slot = 1
+	case '*', '.':
+		slot = 2
+	case '+', '/':
+		slot = 3
+	default:
+		return
+	}
+	if final == '0' {
+		t.scr.g[slot] = charsetGraphics
+		return
+	}
+	t.scr.g[slot] = charsetASCII
 }
 
 func (t *Terminal) osc(data []byte) {

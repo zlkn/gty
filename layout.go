@@ -47,6 +47,10 @@ type pane struct {
 	retired uint64 // what the terminal had shed when scroll was last adjusted; see follow
 	sel     selection
 
+	// mouseRow, mouseCol are the cell the last motion report named, one-based. Moving
+	// within one cell is not an event a tracking program wants to hear about.
+	mouseRow, mouseCol int
+
 	// shown folds DECTCEM, the blink phase and the focus into one bit. text.Layout and the
 	// rect quads must read the same value, or a cell goes blank.
 	shown bool

@@ -237,6 +237,15 @@ type app struct {
 	clicks   clickTracker
 	cursor   *glfw.Cursor
 	selRects []image.Rectangle
+
+	// Mouse tracking state. held is which buttons are down, because a motion report has
+	// to name one; arrow replaces the I-beam while a program is tracking, where dragging
+	// selects nothing; focusReported is the pane the last focus report went to, so pane,
+	// tab and window changes all reconcile through one place.
+	held          map[glfw.MouseButton]bool
+	arrow         *glfw.Cursor
+	pointerArrow  bool
+	focusReported *pane
 }
 
 func (a *app) newPane() *pane {
@@ -416,6 +425,8 @@ func newApp() (*app, error) {
 	})
 
 	a.cursor = glfw.CreateStandardCursor(glfw.IBeamCursor)
+	a.arrow = glfw.CreateStandardCursor(glfw.ArrowCursor)
+	a.held = make(map[glfw.MouseButton]bool)
 	window.SetCursor(a.cursor)
 
 	a.windowFocused = window.GetAttrib(glfw.Focused) == glfw.True
@@ -458,6 +469,8 @@ func (a *app) run() error {
 		if a.window.ShouldClose() {
 			break
 		}
+		a.syncFocus()
+		a.syncPointer()
 		if on := blinkOn(time.Since(a.blinkEpoch), a.windowFocused); on != a.blinkShown {
 			a.blinkShown = on
 			a.needsLayout.Store(true)
@@ -628,6 +641,25 @@ func tildeKey(n int, mods glfw.ModifierKey) []byte {
 	return fmt.Appendf(nil, "\x1b[%d~", n)
 }
 
+// fnTilde is the number each of F5 through F12 carries in its CSI n ~ sequence. The run
+// skips 16 and 22 because the VT220 keyboard it comes from had no keys there.
+var fnTilde = [...]int{15, 17, 18, 19, 20, 21, 23, 24}
+
+// functionKey is F1 through F12, or nil for anything else.
+//
+// F1 to F4 are the VT220's PF keys and come as SS3, in either cursor mode — passing
+// appCursor as true says exactly that. A held modifier takes them back to CSI form with the
+// modifier as a parameter, which is the rule cursorKey already implements.
+func functionKey(key glfw.Key, mods glfw.ModifierKey) []byte {
+	switch {
+	case key >= glfw.KeyF1 && key <= glfw.KeyF4:
+		return cursorKey(byte('P'+key-glfw.KeyF1), mods, true)
+	case key >= glfw.KeyF5 && key <= glfw.KeyF12:
+		return tildeKey(fnTilde[key-glfw.KeyF5], mods)
+	}
+	return nil
+}
+
 // keypadFinal is the SS3 final byte a keypad key sends in application mode, after terminfo's
 // kpZRO=\EOp and its neighbours. Enter is not here: it is the one with a fallback.
 func keypadFinal(key glfw.Key) (byte, bool) {
@@ -672,6 +704,8 @@ func keyBytes(key glfw.Key, mods glfw.ModifierKey, appCursor, appKeypad bool) []
 		return cursorKey('H', mods, appCursor)
 	case glfw.KeyEnd:
 		return cursorKey('F', mods, appCursor)
+	case glfw.KeyInsert:
+		return tildeKey(2, mods)
 	case glfw.KeyDelete:
 		return tildeKey(3, mods)
 	case glfw.KeyPageUp:
@@ -679,10 +713,21 @@ func keyBytes(key glfw.Key, mods glfw.ModifierKey, appCursor, appKeypad bool) []
 	case glfw.KeyPageDown:
 		return tildeKey(6, mods)
 	}
+	if b := functionKey(key, mods); b != nil {
+		return b
+	}
 
 	var b []byte
 	switch key {
 	case glfw.KeyEnter:
+		// Shift+Enter has no encoding of its own on a pty: it arrives as the same bare CR
+		// as Enter, so an application that wants it for a newline cannot see it. ESC CR is
+		// what Claude Code's /terminal-setup binds Shift+Enter to in the terminals it
+		// configures, and what it reads as a newline. Folding the shift into Alt rather
+		// than writing the bytes here keeps Alt+Shift+Enter from growing a second escape.
+		if mods&glfw.ModShift != 0 {
+			mods |= glfw.ModAlt
+		}
 		b = []byte{'\r'}
 	case glfw.KeyKPEnter:
 		if b = []byte{'\r'}; appKeypad {
@@ -746,7 +791,7 @@ func (a *app) paneAt(w *glfw.Window) (*pane, image.Point) {
 // scrollAt scrolls the pane under the mouse, which a terminal does regardless of
 // which pane has the focus.
 func (a *app) scrollAt(w *glfw.Window, yoff float64) {
-	p, _ := a.paneAt(w)
+	p, at := a.paneAt(w)
 	if p == nil {
 		return
 	}
@@ -757,31 +802,246 @@ func (a *app) scrollAt(w *glfw.Window, yoff float64) {
 			lines = -1
 		}
 	}
+
+	// A tracking program gets the wheel as buttons 64 and 65, one report per notch.
+	if a.reportsMouse(p, windowMods(w)) {
+		code := vte.MouseWheelUp
+		if lines < 0 {
+			code = vte.MouseWheelDown
+		}
+		row, col := a.cellUnder(p, at)
+		for range notches(yoff) {
+			a.send(p, p.term.MouseReport(code, true, false, mouseMods(windowMods(w)), row, col))
+		}
+		return
+	}
+
+	// The alternate screen keeps no history, so scrolling it means driving the program's
+	// own cursor keys. Without this the wheel is dead in less, vim and man.
+	if p.term.AltScreen() && p.term.AltScroll() {
+		a.send(p, arrowRun(lines, p.term.AppCursor()))
+		return
+	}
 	a.scroll(p, lines)
 }
 
+// notches is how many wheel events one scroll callback stands for. A mouse reports whole
+// notches; a touchpad reports a fraction of one, and a fraction still has to move.
+func notches(yoff float64) int {
+	n := int(yoff)
+	if n < 0 {
+		n = -n
+	}
+	return max(n, 1)
+}
+
+// arrowRun is n cursor-up or cursor-down keys, in whichever form DECCKM asked for.
+func arrowRun(lines int, appCursor bool) []byte {
+	key := "\x1b[A"
+	if appCursor {
+		key = "\x1bOA"
+	}
+	if lines < 0 {
+		lines = -lines
+		key = "\x1b[B"
+		if appCursor {
+			key = "\x1bOB"
+		}
+	}
+	return []byte(strings.Repeat(key, lines))
+}
+
+// reportsMouse is whether the pane's program gets the event instead of the selection.
+// Shift always reaches the selection — that is the way out every terminal keeps, and
+// without it there would be no copying text out of vim. A pane scrolled back into history
+// is left alone too: there is no live row under the pointer to name.
+func (a *app) reportsMouse(p *pane, mods glfw.ModifierKey) bool {
+	return p.term.MouseProto() != vte.MouseOff && mods&glfw.ModShift == 0 && p.scroll == 0
+}
+
+// cellUnder is the one-based row and column a report carries. cellAt clamps to the visible
+// grid, which is the live screen as long as the pane is not scrolled back.
+func (a *app) cellUnder(p *pane, at image.Point) (row, col int) {
+	cellW, cellH := a.text.CellSize()
+	row, col = p.cellAt(at, cellW, cellH)
+	return row + 1, min(col, max(p.cols-1, 0)) + 1
+}
+
+// send writes what gty produced itself: a mouse or focus report. Unlike toShell it leaves
+// the selection and the scroll position where they are, because the program asked for
+// these and the user did not type them.
+func (a *app) send(p *pane, b []byte) {
+	if len(b) > 0 {
+		p.term.Write(b)
+	}
+}
+
+// mouseCode is the button number a report carries. glfw numbers the buttons in its own
+// order, and anything past the third has no code of its own.
+func mouseCode(b glfw.MouseButton) (int, bool) {
+	switch b {
+	case glfw.MouseButtonLeft:
+		return vte.MouseLeft, true
+	case glfw.MouseButtonMiddle:
+		return vte.MouseMiddle, true
+	case glfw.MouseButtonRight:
+		return vte.MouseRight, true
+	}
+	return 0, false
+}
+
+func mouseMods(mods glfw.ModifierKey) vte.Mods {
+	var m vte.Mods
+	if mods&glfw.ModShift != 0 {
+		m |= vte.ModShift
+	}
+	if mods&glfw.ModAlt != 0 {
+		m |= vte.ModAlt
+	}
+	if mods&glfw.ModControl != 0 {
+		m |= vte.ModCtrl
+	}
+	return m
+}
+
+// modKeys are the keys glfw can be asked about after the fact, paired with the modifier
+// each stands for.
+var modKeys = []struct {
+	key glfw.Key
+	mod glfw.ModifierKey
+}{
+	{glfw.KeyLeftShift, glfw.ModShift},
+	{glfw.KeyRightShift, glfw.ModShift},
+	{glfw.KeyLeftAlt, glfw.ModAlt},
+	{glfw.KeyRightAlt, glfw.ModAlt},
+	{glfw.KeyLeftControl, glfw.ModControl},
+	{glfw.KeyRightControl, glfw.ModControl},
+}
+
+// windowMods is the modifier state for the two callbacks glfw does not pass it to. Motion
+// and the wheel carry the same modifiers as a press, so they have to be asked for.
+func windowMods(w *glfw.Window) glfw.ModifierKey {
+	var m glfw.ModifierKey
+	for _, k := range modKeys {
+		if w.GetKey(k.key) == glfw.Press {
+			m |= k.mod
+		}
+	}
+	return m
+}
+
+// heldCode is the button a motion report names: the lowest one held, or the code for none,
+// which only any-event tracking ever sends.
+func (a *app) heldCode() (code int, held bool) {
+	code = vte.MouseNone
+	for b := range a.held {
+		if c, ok := mouseCode(b); ok && (!held || c < code) {
+			code, held = c, true
+		}
+	}
+	return code, held
+}
+
+// reportMotion sends a motion event, and only when the pointer has crossed into another
+// cell: a tracking program counts cells, not pixels.
+func (a *app) reportMotion(p *pane, at image.Point) {
+	proto := p.term.MouseProto()
+	if proto < vte.MouseButton {
+		return
+	}
+	code, held := a.heldCode()
+	if !held && proto < vte.MouseAny {
+		return
+	}
+	row, col := a.cellUnder(p, at)
+	if row == p.mouseRow && col == p.mouseCol {
+		return
+	}
+	p.mouseRow, p.mouseCol = row, col
+	a.send(p, p.term.MouseReport(code, true, true, mouseMods(windowMods(a.window)), row, col))
+}
+
+// syncFocus tells a program that asked for focus events when its pane gained or lost the
+// keyboard. It is reconciled from the loop rather than from each place that moves the
+// focus, so a pane, a tab and the window itself all come through one path. A pane closed
+// in between is harmless: its terminal has dropped the pty and the write goes nowhere.
+func (a *app) syncFocus() {
+	p := a.focused
+	if !a.windowFocused {
+		p = nil
+	}
+	if p == a.focusReported {
+		return
+	}
+	if prev := a.focusReported; prev != nil {
+		a.send(prev, prev.term.FocusReport(false))
+	}
+	if p != nil {
+		a.send(p, p.term.FocusReport(true))
+	}
+	a.focusReported = p
+}
+
+// syncPointer keeps the pointer an arrow over a pane whose program is tracking the mouse,
+// where a drag selects nothing, and drops a drag that a program started tracking under.
+func (a *app) syncPointer() {
+	if a.drag != nil && a.drag.term.MouseProto() != vte.MouseOff {
+		a.drag.sel.dragging = false
+		a.drag.sel.clear()
+		a.drag = nil
+		a.Damage()
+	}
+	p, _ := a.paneAt(a.window)
+	arrow := p != nil && p.term.MouseProto() != vte.MouseOff
+	if arrow == a.pointerArrow {
+		return
+	}
+	a.pointerArrow = arrow
+	if arrow {
+		a.window.SetCursor(a.arrow)
+		return
+	}
+	a.window.SetCursor(a.cursor)
+}
+
 func (a *app) onMouseButton(w *glfw.Window, button glfw.MouseButton, act glfw.Action, mods glfw.ModifierKey) {
+	if act != glfw.Press && act != glfw.Release {
+		return
+	}
+	press := act == glfw.Press
+	if press {
+		a.held[button] = true
+	} else {
+		delete(a.held, button)
+	}
+
+	p, at := a.paneAt(w)
+	if press && p != nil && a.focused != p {
+		a.focused = p
+		a.Damage()
+	}
+
+	if p != nil && a.reportsMouse(p, mods) {
+		if code, ok := mouseCode(button); ok {
+			row, col := a.cellUnder(p, at)
+			p.mouseRow, p.mouseCol = row, col
+			a.send(p, p.term.MouseReport(code, press, false, mouseMods(mods), row, col))
+		}
+		return
+	}
+
 	if button != glfw.MouseButtonLeft {
 		return
 	}
-	if act == glfw.Release {
+	if !press {
 		if a.drag != nil {
 			a.drag.sel.dragging = false
 			a.drag = nil
 		}
 		return
 	}
-	if act != glfw.Press {
-		return
-	}
-
-	p, at := a.paneAt(w)
 	if p == nil {
 		return
-	}
-	if a.focused != p {
-		a.focused = p
-		a.Damage()
 	}
 
 	cellW, cellH := a.text.CellSize()
@@ -826,6 +1086,10 @@ func (a *app) onMouseButton(w *glfw.Window, button glfw.MouseButton, act glfw.Ac
 }
 
 func (a *app) onCursorPos(w *glfw.Window) {
+	if p, at := a.paneAt(w); p != nil && a.reportsMouse(p, windowMods(w)) {
+		a.reportMotion(p, at)
+		return
+	}
 	if a.drag == nil {
 		return
 	}
@@ -1162,6 +1426,10 @@ func (a *app) release() {
 	if a.cursor != nil {
 		a.cursor.Destroy()
 		a.cursor = nil
+	}
+	if a.arrow != nil {
+		a.arrow.Destroy()
+		a.arrow = nil
 	}
 	glfw.Terminate()
 }

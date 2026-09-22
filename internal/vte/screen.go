@@ -1,7 +1,7 @@
 package vte
 
-// tabWidth is the fixed tab stop. Real terminals move them with HTS and TBC; nothing
-// gty talks to has asked yet.
+// tabWidth is the spacing of the stops a screen starts with. HTS and TBC move them from
+// there, so it is a default rather than the rule.
 const tabWidth = 8
 
 // savedCursor is what DECSC keeps and DECRC puts back.
@@ -9,6 +9,8 @@ type savedCursor struct {
 	row, col int
 	pen      Cell
 	autowrap bool
+	g        [4]charset
+	gl       int
 }
 
 // screen is the addressable grid a shell writes to, as distinct from the history behind it: a
@@ -33,10 +35,29 @@ type screen struct {
 
 	pen   Cell // the attributes a written cell takes; SGR sets it
 	saved savedCursor
+
+	// tabs marks the columns a tab stops on, one flag per column. A fixed step of eight
+	// would do for a shell, but ncurses moves the stops with HTS and TBC and then trusts
+	// them.
+	tabs []bool
+
+	// insert is IRM: a written cell pushes the rest of the line right rather than
+	// overwriting what is there.
+	insert bool
+
+	// g holds the four character-set slots and gl the one invoked as GL, which SI and SO
+	// switch between. Per screen, because DECSC and DECRC carry them along with the cursor.
+	g  [4]charset
+	gl int
+
+	// last is the rune REP repeats. Only printing sets it, and moving the cursor clears
+	// it: a repeat reaching across a control sequence would copy the wrong character.
+	last rune
 }
 
 func newScreen(cols, rows int, out *scrollback) *screen {
 	s := &screen{cols: max(cols, 0), out: out, autowrap: true}
+	s.resetTabs()
 	s.setHeight(max(rows, 0))
 	return s
 }
@@ -54,6 +75,7 @@ func (s *screen) erased() Cell { return Cell{BG: s.pen.BG} }
 func (s *screen) resize(cols, rows int) {
 	if cols = max(cols, 0); cols != s.cols {
 		s.cols = cols
+		s.resizeTabs(cols)
 		for i := range s.lines {
 			s.lines[i].resizeTo(cols)
 		}
@@ -109,7 +131,7 @@ func (s *screen) setRegion(top, bot int) {
 func (s *screen) moveTo(row, col int) {
 	s.curRow = min(max(row, 0), max(s.height()-1, 0))
 	s.curCol = min(max(col, 0), max(s.cols-1, 0))
-	s.wrapNext = false
+	s.wrapNext, s.last = false, 0
 }
 
 func (s *screen) moveBy(rows, cols int) { s.moveTo(s.curRow+rows, s.curCol+cols) }
@@ -129,7 +151,11 @@ func (s *screen) put(r rune) {
 	}
 	c := s.pen
 	c.Rune = r
+	if s.insert {
+		s.insertChars(1)
+	}
 	s.set(s.curRow, s.curCol, c)
+	s.last = r
 	if s.curCol+1 < s.cols {
 		s.curCol++
 	} else if s.autowrap {
@@ -146,7 +172,7 @@ func (s *screen) set(row, col int, c Cell) {
 
 // lineFeed moves down a row, scrolling the region when the cursor is on its last line.
 func (s *screen) lineFeed() {
-	s.wrapNext = false
+	s.wrapNext, s.last = false, 0
 	switch {
 	case s.curRow == s.bot:
 		s.scrollUp()
@@ -293,7 +319,7 @@ func (s *screen) fillRange(row, from, to int) {
 	l.touch()
 }
 
-func (s *screen) carriageReturn() { s.curCol, s.wrapNext = 0, false }
+func (s *screen) carriageReturn() { s.curCol, s.wrapNext, s.last = 0, false, 0 }
 
 // backspace moves the cursor left without erasing — the shell redraws whatever it
 // wants there. A pending wrap is spent instead of a column.
@@ -306,23 +332,125 @@ func (s *screen) backspace() {
 }
 
 // tab moves to the next stop, or to the last column.
-func (s *screen) tab() {
+func (s *screen) tab() { s.tabForward(1) }
+
+// tabForward is CHT: n stops to the right, the last column when the stops run out.
+func (s *screen) tabForward(n int) {
 	s.wrapNext = false
-	s.curCol = min((s.curCol/tabWidth+1)*tabWidth, max(s.cols-1, 0))
+	for range max(n, 1) {
+		s.curCol = s.nextStop(s.curCol)
+	}
+}
+
+// tabBack is CBT: n stops to the left, the first column when they run out.
+func (s *screen) tabBack(n int) {
+	s.wrapNext = false
+	for range max(n, 1) {
+		s.curCol = s.prevStop(s.curCol)
+	}
+}
+
+func (s *screen) nextStop(col int) int {
+	for i := col + 1; i < len(s.tabs); i++ {
+		if s.tabs[i] {
+			return i
+		}
+	}
+	return max(s.cols-1, 0)
+}
+
+func (s *screen) prevStop(col int) int {
+	for i := min(col, len(s.tabs)) - 1; i > 0; i-- {
+		if s.tabs[i] {
+			return i
+		}
+	}
+	return 0
+}
+
+// setTab is HTS: the cursor's column becomes a stop.
+func (s *screen) setTab() {
+	if s.curCol < len(s.tabs) {
+		s.tabs[s.curCol] = true
+	}
+}
+
+// clearTab is TBC: 0 drops the stop under the cursor, 3 drops every one of them.
+func (s *screen) clearTab(mode int) {
+	switch mode {
+	case 0:
+		if s.curCol < len(s.tabs) {
+			s.tabs[s.curCol] = false
+		}
+	case 3:
+		clear(s.tabs)
+	}
+}
+
+// repeat is REP. Nothing printed yet means nothing to copy.
+func (s *screen) repeat(n int) {
+	r := s.last
+	if r == 0 {
+		return
+	}
+	for range max(n, 1) {
+		s.put(r)
+	}
+}
+
+// resetTabs puts the stops back every eight columns, where a terminal starts. Column one
+// is not one of them: a tab from there lands on column nine.
+func (s *screen) resetTabs() {
+	s.tabs = make([]bool, s.cols)
+	for i := tabWidth; i < s.cols; i += tabWidth {
+		s.tabs[i] = true
+	}
+}
+
+// resizeTabs refits the table to a new width. The stops inside the old width are the
+// program's and are kept; the columns beyond it are new and take the default.
+func (s *screen) resizeTabs(cols int) {
+	old := s.tabs
+	s.tabs = make([]bool, cols)
+	n := min(len(old), cols)
+	copy(s.tabs, old[:n])
+	for i := max(((n+tabWidth-1)/tabWidth)*tabWidth, tabWidth); i < cols; i += tabWidth {
+		s.tabs[i] = true
+	}
 }
 
 func (s *screen) save() {
-	s.saved = savedCursor{row: s.curRow, col: s.curCol, pen: s.pen, autowrap: s.autowrap}
+	s.saved = savedCursor{
+		row: s.curRow, col: s.curCol, pen: s.pen, autowrap: s.autowrap,
+		g: s.g, gl: s.gl,
+	}
 }
 
 func (s *screen) restore() {
 	s.pen, s.autowrap = s.saved.pen, s.saved.autowrap
+	s.g, s.gl = s.saved.g, s.saved.gl
 	s.moveTo(s.saved.row, s.saved.col)
+}
+
+// softReset is DECSTR: the modes a program can change go back to their defaults, while the
+// grid, the history and the cursor's position stay as they are. The saved cursor goes home,
+// which is the one thing the standard does move.
+func (s *screen) softReset() {
+	s.pen = Cell{}
+	s.insert = false
+	s.g, s.gl = [4]charset{}, 0
+	s.autowrap, s.wrapNext = true, false
+	s.top, s.bot = 0, max(s.height()-1, 0)
+	s.saved = savedCursor{autowrap: true}
 }
 
 // reset returns the screen to a fresh state, as entering the alternate screen wants.
 func (s *screen) reset() {
 	s.pen = Cell{}
+	s.insert = false
+	s.g, s.gl = [4]charset{}, 0
+	s.last = 0
+	s.resetTabs()
 	for r := range s.height() {
 		s.fillRange(r, 0, s.cols)
 	}

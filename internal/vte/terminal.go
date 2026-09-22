@@ -73,6 +73,13 @@ type Terminal struct {
 	bracketedPaste bool // DECSET 2004
 	title          string
 
+	// Mouse tracking, all four of them set by DECSET; see mouse.go. altScroll starts on
+	// because a wheel that does nothing on the alternate screen reads as a broken one.
+	mouseProto  MouseProto
+	mouseEnc    mouseEnc
+	focusEvents bool
+	altScroll   bool
+
 	answers []byte // replies owed to the shell; see feed
 	inbuf   []byte // bytes taken from the pty, reused between Pumps
 
@@ -88,11 +95,12 @@ func New(cols, rows int) *Terminal {
 		pri: pri,
 		// The alternate screen keeps no history: a full-screen program owns the grid, and
 		// its repaints are not something to scroll back through.
-		alt:     newScreen(cols, rows, nil),
-		scr:     pri,
-		hist:    hist,
-		visible: true,
-		updates: make(chan struct{}, 1),
+		alt:       newScreen(cols, rows, nil),
+		scr:       pri,
+		hist:      hist,
+		visible:   true,
+		altScroll: true,
+		updates:   make(chan struct{}, 1),
 	}
 }
 

@@ -243,6 +243,25 @@ func TestKeyBytesAltIsNotPrefixedOnCursorKeys(t *testing.T) {
 	}
 }
 
+// TestKeyBytesShiftEnter: Shift+Enter is indistinguishable from Enter on a pty unless the
+// terminal gives it a sequence. ESC CR is the one Claude Code expects for a newline, and the
+// shift must not stack a second escape on top of Alt's.
+func TestKeyBytesShiftEnter(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		mods glfw.ModifierKey
+		want string
+	}{
+		{"enter", 0, "\r"},
+		{"shift+enter", glfw.ModShift, "\x1b\r"},
+		{"alt+shift+enter", glfw.ModAlt | glfw.ModShift, "\x1b\r"},
+	} {
+		if got := string(keyBytes(glfw.KeyEnter, tc.mods, false, false)); got != tc.want {
+			t.Errorf("%s sends %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
 // TestKeyBytesShiftTab: back-tab is its own sequence, terminfo's kcbt=\E[Z. Sending a bare
 // tab for it leaves <S-Tab> dead in every application that asked terminfo what to expect.
 func TestKeyBytesShiftTab(t *testing.T) {
@@ -297,5 +316,50 @@ func TestKeyBytesKeypad(t *testing.T) {
 	}
 	if got, want := string(keyBytes(glfw.KeyKPEnter, 0, false, false)), "\r"; got != want {
 		t.Errorf("keypad enter in numeric mode sends %q, want %q", got, want)
+	}
+}
+
+// TestKeyBytesFunctionKeys is F1 through F12 and Insert. F1 to F4 keep the SS3 form in
+// either cursor mode, and take the CSI form only when a modifier has to go in a parameter.
+func TestKeyBytesFunctionKeys(t *testing.T) {
+	for _, tc := range []struct {
+		key  glfw.Key
+		want string
+	}{
+		{glfw.KeyF1, "\x1bOP"},
+		{glfw.KeyF2, "\x1bOQ"},
+		{glfw.KeyF3, "\x1bOR"},
+		{glfw.KeyF4, "\x1bOS"},
+		{glfw.KeyF5, "\x1b[15~"},
+		{glfw.KeyF6, "\x1b[17~"},
+		{glfw.KeyF7, "\x1b[18~"},
+		{glfw.KeyF8, "\x1b[19~"},
+		{glfw.KeyF9, "\x1b[20~"},
+		{glfw.KeyF10, "\x1b[21~"},
+		{glfw.KeyF11, "\x1b[23~"},
+		{glfw.KeyF12, "\x1b[24~"},
+		{glfw.KeyInsert, "\x1b[2~"},
+	} {
+		for _, app := range []bool{false, true} {
+			if got := string(keyBytes(tc.key, 0, app, false)); got != tc.want {
+				t.Errorf("key %v with appCursor=%v sends %q, want %q", tc.key, app, got, tc.want)
+			}
+		}
+	}
+
+	for _, tc := range []struct {
+		key  glfw.Key
+		mods glfw.ModifierKey
+		want string
+	}{
+		{glfw.KeyF1, glfw.ModShift, "\x1b[1;2P"},
+		{glfw.KeyF4, glfw.ModControl, "\x1b[1;5S"},
+		{glfw.KeyF5, glfw.ModShift, "\x1b[15;2~"},
+		{glfw.KeyF12, glfw.ModAlt, "\x1b[24;3~"},
+		{glfw.KeyInsert, glfw.ModShift, "\x1b[2;2~"},
+	} {
+		if got := string(keyBytes(tc.key, tc.mods, false, false)); got != tc.want {
+			t.Errorf("key %v with %v sends %q, want %q", tc.key, tc.mods, got, tc.want)
+		}
 	}
 }
