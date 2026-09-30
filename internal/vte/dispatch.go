@@ -2,6 +2,9 @@ package vte
 
 import (
 	"fmt"
+	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -312,6 +315,10 @@ func (t *Terminal) osc(data []byte) {
 		t.title = cleanTitle(rest)
 		return
 	}
+	if rest, ok := strings.CutPrefix(s, "7;"); ok {
+		t.cwd = parseCwd(rest)
+		return
+	}
 
 	// The colour queries are worth answering because the answer is true: apps ask so they
 	// can pick a light or a dark theme.
@@ -354,6 +361,21 @@ func cleanTitle(s string) string {
 		out = append(out, r)
 	}
 	return string(out)
+}
+
+// parseCwd reads the file URL of OSC 7. A path from another host, which is what a shell on
+// the far side of ssh sends, names nothing here, so it counts as no directory at all.
+func parseCwd(s string) string {
+	u, err := url.Parse(s)
+	if err != nil || u.Scheme != "file" || !filepath.IsAbs(u.Path) || len(u.Path) > pathMax {
+		return ""
+	}
+	if u.Host != "" && u.Host != "localhost" {
+		if h, _ := os.Hostname(); u.Host != h {
+			return ""
+		}
+	}
+	return u.Path
 }
 
 // reply queues an answer to a query, collected so one read from the shell produces at most

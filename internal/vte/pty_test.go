@@ -187,7 +187,7 @@ func TestStartGivesTheShellItsEnvironment(t *testing.T) {
 	t.Setenv("SHELL", "/bin/sh")
 
 	woken := make(chan struct{}, 64)
-	s, err := startShell(80, 24, func() {
+	s, err := startShell("", 80, 24, func() {
 		select {
 		case woken <- struct{}{}:
 		default:
@@ -201,4 +201,33 @@ func TestStartGivesTheShellItsEnvironment(t *testing.T) {
 	// The brackets keep the answer apart from the tty's echo of the line that asked.
 	s.write([]byte("echo \"[$TERM][$COLORTERM]\"\n"))
 	drainUntil(t, s, woken, "[xterm-256color][truecolor]")
+}
+
+// TestStartShellInDir: a new pane opens where its neighbour was, and a directory that has
+// since gone away still gets a shell.
+func TestStartShellInDir(t *testing.T) {
+	t.Setenv("SHELL", "/bin/sh")
+	dir := t.TempDir()
+
+	for _, tc := range []struct{ name, dir, want string }{
+		{"existing", dir, "[" + dir + "]"},
+		{"gone", dir + "/gone", "]"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			woken := make(chan struct{}, 64)
+			s, err := startShell(tc.dir, 80, 24, func() {
+				select {
+				case woken <- struct{}{}:
+				default:
+				}
+			})
+			if err != nil {
+				t.Fatalf("start in %q: %v", tc.dir, err)
+			}
+			t.Cleanup(s.close)
+
+			s.write([]byte("echo \"[$(pwd)][$PWD]\"\n"))
+			drainUntil(t, s, woken, tc.want)
+		})
+	}
 }

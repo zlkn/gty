@@ -20,14 +20,27 @@ type pty struct {
 	err  error // EOF or a read failure; the terminal is finished once it surfaces
 }
 
-func startShell(cols, rows int, wake func()) (*pty, error) {
+func startShell(dir string, cols, rows int, wake func()) (*pty, error) {
 	sh := os.Getenv("SHELL")
 	if sh == "" {
 		sh = "/bin/sh"
 	}
 	cmd := exec.Command(sh)
 	cmd.Env = append(os.Environ(), "TERM=xterm-256color", "COLORTERM=truecolor")
+	startIn(cmd, dir)
 	return startPTY(cmd, cols, rows, wake)
+}
+
+// startIn points cmd at dir, unless dir is gone: a pane whose directory was deleted still
+// opens a shell. PWD goes with it, or the shell would show the path with its links resolved.
+func startIn(cmd *exec.Cmd, dir string) {
+	if fi, err := os.Stat(dir); dir == "" || err != nil || !fi.IsDir() {
+		return
+	}
+	cmd.Dir = dir
+	if cmd.Env != nil {
+		cmd.Env = append(cmd.Env, "PWD="+dir)
+	}
 }
 
 func startPTY(cmd *exec.Cmd, cols, rows int, wake func()) (*pty, error) {

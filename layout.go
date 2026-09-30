@@ -35,7 +35,8 @@ type pane struct {
 	cols, rows int             // grid that fits rect after padding
 
 	term    *vte.Terminal
-	noShell bool // the shell failed to start; do not keep retrying
+	noShell bool   // the shell failed to start; do not keep retrying
+	dir     string // where the shell starts: the focused pane's directory when this one opened
 
 	// frame is the snapshot every part of a draw reads, so the glyphs, the paint and the
 	// cursor cannot disagree. view is its backing store, refilled in place each frame.

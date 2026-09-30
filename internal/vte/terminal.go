@@ -32,6 +32,10 @@ type Options struct {
 	// Cmd is the child to start. nil runs $SHELL.
 	Cmd *exec.Cmd
 
+	// Dir is where the child starts. "" leaves it in the host's own directory, and so does
+	// one that no longer exists.
+	Dir string
+
 	CursorShape CursorShape
 
 	// Wake is called from the reader goroutine once the shell has written. A host with an
@@ -72,6 +76,7 @@ type Terminal struct {
 	appKeypad      bool // DECKPAM
 	bracketedPaste bool // DECSET 2004
 	title          string
+	cwd            string // the last OSC 7; "" until the shell reports one
 
 	// Mouse tracking, all four of them set by DECSET; see mouse.go. altScroll starts on
 	// because a wheel that does nothing on the alternate screen reads as a broken one.
@@ -122,9 +127,12 @@ func (t *Terminal) Attach(o Options) error {
 	cols, rows := t.Size()
 	var err error
 	if o.Cmd != nil {
+		if o.Cmd.Dir == "" {
+			startIn(o.Cmd, o.Dir)
+		}
 		t.pty, err = startPTY(o.Cmd, cols, rows, t.notify)
 	} else {
-		t.pty, err = startShell(cols, rows, t.notify)
+		t.pty, err = startShell(o.Dir, cols, rows, t.notify)
 	}
 	return err
 }
@@ -203,6 +211,14 @@ func (t *Terminal) Title() string {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 	return t.title
+}
+
+// Cwd is the directory the shell last reported with OSC 7, for a host opening a new one
+// alongside it.
+func (t *Terminal) Cwd() string {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.cwd
 }
 
 func (t *Terminal) Size() (cols, rows int) {

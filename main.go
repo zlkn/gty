@@ -250,7 +250,11 @@ type app struct {
 
 func (a *app) newPane() *pane {
 	a.nextID++
-	return newPane(a.nextID)
+	p := newPane(a.nextID)
+	if a.focused != nil {
+		p.dir = a.focused.term.Cwd()
+	}
+	return p
 }
 
 // ensureShell starts a pane's shell, once. It waits for the layout to have given the pane a
@@ -261,6 +265,7 @@ func (a *app) ensureShell(p *pane) {
 		return
 	}
 	if err := p.term.Attach(vte.Options{
+		Dir:         p.dir,
 		CursorShape: cursorShapeDefault,
 		Wake:        a.Damage,
 		ReportColor: reportThemeColor,
