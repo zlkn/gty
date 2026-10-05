@@ -1,6 +1,9 @@
 package vte
 
-import "strings"
+import (
+	"strings"
+	"sync/atomic"
+)
 
 // Row is one line of the terminal: its cells, the identity a view's cache keys on, and the
 // version that cache compares.
@@ -11,8 +14,9 @@ type Row struct {
 	// the history. Stamped on the way out; the live grid derives it from position.
 	Seq uint64
 
-	// Gen counts edits and never goes back. Zero is a line never written, which a view can
-	// read as nothing to reuse.
+	// Gen is the edit that last changed the line, numbered across every row, so two lines
+	// never share one and a line moved into another's place does not pass for it. Zero is a
+	// line never written, which a view can read as nothing to reuse.
 	Gen uint64
 
 	// Wrapped is true when the line soft-wrapped onto the next one because output reached
@@ -21,7 +25,9 @@ type Row struct {
 }
 
 // touch marks the line edited. A caller writing a run of cells touches once at the end.
-func (r *Row) touch() { r.Gen++ }
+func (r *Row) touch() { r.Gen = gens.Add(1) }
+
+var gens atomic.Uint64
 
 // fill resets the row to cols copies of c, keeping its allocation. c carries the background
 // the pen is painting with, for a scrolled-off row recycled as the new bottom line.

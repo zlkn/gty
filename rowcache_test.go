@@ -130,3 +130,31 @@ func TestRowCacheHoldsEveryLineOnScreen(t *testing.T) {
 		t.Errorf("%d lines share %d slots; some evict each other every frame", len(p.frame.Lines), len(slots))
 	}
 }
+
+// TestRowCacheReshapesLinesMovedByInsertLine: IL inside a scroll region moves lines to
+// other positions without retiring any, which is how nvim opens room for a virtual line.
+// Every line that now reads differently has to be shaped again.
+func TestRowCacheReshapesLinesMovedByInsertLine(t *testing.T) {
+	p := gridPane(1, image.Rect(0, 0, 800, 300), 10, 5, "aaa", "bbb", "ccc", "ddd")
+	var c counter
+	shapeFrame(p, &c)
+	before := make([]string, len(p.frame.Lines))
+	for i, l := range p.frame.Lines {
+		before[i] = l.String()
+	}
+
+	p.term.Feed([]byte("\x1b[2;5r\x1b[2;1H\x1b[L\x1b[r"))
+	p.snap()
+	c.calls = 0
+	shapeFrame(p, &c)
+
+	changed := 0
+	for i, l := range p.frame.Lines {
+		if l.String() != before[i] {
+			changed++
+		}
+	}
+	if c.calls < changed {
+		t.Errorf("reshaped %d lines after an insert, but %d of them changed", c.calls, changed)
+	}
+}
