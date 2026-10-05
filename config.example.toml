@@ -86,5 +86,5 @@ paste     = "ctrl+shift+v"
 
 toggle_theme = "ctrl+shift+l"
 
-# goto_tab_1 through goto_tab_9 jump straight to a tab; the rest follow this one
+# goto_tab_1 through goto_tab_9 jump straight to a tab; the rest default to alt+2 … alt+9
 goto_tab_1 = "alt+1"

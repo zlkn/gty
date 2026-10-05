@@ -107,7 +107,7 @@ func TestDefaultKeybinds(t *testing.T) {
 	}
 	// The nine digits, which keys.go binds in a loop for the same reason.
 	for i := range numTabKeys {
-		want[fmt.Sprintf("goto_tab_%d", i+1)] = fmt.Sprintf("ctrl+shift+%d", i+1)
+		want[fmt.Sprintf("goto_tab_%d", i+1)] = fmt.Sprintf("alt+%d", i+1)
 	}
 	if len(actionNames) != int(numActions) || len(keybinds) != int(numActions) {
 		t.Errorf("%d actions, %d of them named and %d of them bound", numActions, len(actionNames), len(keybinds))

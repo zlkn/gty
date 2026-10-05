@@ -115,13 +115,12 @@ var keybinds = map[action]chord{
 	actionToggleTheme: {glfw.KeyL, glfw.ModControl | glfw.ModShift},
 }
 
-// Ctrl+Shift+N rather than the Alt+N other terminals use, to keep to the one modifier
-// pair this window reserves.
+// Alt+N, as other terminals bind it, at the cost of the Alt+digit a program would see.
 func init() {
 	for i := range action(numTabKeys) {
 		act := actionGotoTab1 + i
 		actionNames[fmt.Sprintf("goto_tab_%d", i+1)] = act
-		keybinds[act] = chord{glfw.Key1 + glfw.Key(i), glfw.ModControl | glfw.ModShift}
+		keybinds[act] = chord{glfw.Key1 + glfw.Key(i), glfw.ModAlt}
 	}
 	// Package variables initialise before any init, so boundKeys was inverted while
 	// these nine were still missing.
