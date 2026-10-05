@@ -55,6 +55,12 @@ type fontConfig struct {
 }
 
 type colorConfig struct {
+	Theme *string     `toml:"theme"`
+	Light themeConfig `toml:"light"`
+	Dark  themeConfig `toml:"dark"`
+}
+
+type themeConfig struct {
 	Background *rgba  `toml:"background"`
 	Foreground *rgba  `toml:"foreground"`
 	Selection  *rgba  `toml:"selection"`
@@ -188,34 +194,56 @@ func (c config) apply() error {
 	}
 
 	cl := c.Colors
-	if n := len(cl.ANSI); n != 0 && n != ansiColors {
-		return fmt.Errorf("colors.ansi has %d entries, want %d", n, ansiColors)
+	if t := cl.Theme; t != nil {
+		switch strings.ToLower(strings.TrimSpace(*t)) {
+		case "system":
+			followSystem, darkMode = true, false
+		case "light":
+			followSystem, darkMode = false, false
+		case "dark":
+			followSystem, darkMode = false, true
+		default:
+			return fmt.Errorf("colors.theme is %q, want light, dark or system", *t)
+		}
 	}
-	if n := len(cl.Bright); n != 0 && n != ansiColors {
-		return fmt.Errorf("colors.bright has %d entries, want %d", n, ansiColors)
+	if err := cl.Light.apply(&lightTheme, "colors.light"); err != nil {
+		return err
 	}
-
-	if cl.Background != nil {
-		backgroundRGBA = [4]float32(*cl.Background)
-	}
-	if cl.Foreground != nil {
-		foreground = [4]float32(*cl.Foreground)
-	}
-	if cl.Selection != nil {
-		selectionColor = [4]float32(*cl.Selection)
-	}
-	if cl.Cursor != nil {
-		tint := [4]float32(*cl.Cursor)
-		cursorTint = &tint
-	}
-	for i, c := range cl.ANSI {
-		base16[i] = c.packed()
-	}
-	for i, c := range cl.Bright {
-		base16[ansiColors+i] = c.packed()
+	if err := cl.Dark.apply(&darkTheme, "colors.dark"); err != nil {
+		return err
 	}
 
-	refreshTheme()
+	applyTheme()
+	return nil
+}
+
+func (tc themeConfig) apply(th *theme, name string) error {
+	if n := len(tc.ANSI); n != 0 && n != ansiColors {
+		return fmt.Errorf("%s.ansi has %d entries, want %d", name, n, ansiColors)
+	}
+	if n := len(tc.Bright); n != 0 && n != ansiColors {
+		return fmt.Errorf("%s.bright has %d entries, want %d", name, n, ansiColors)
+	}
+
+	if tc.Background != nil {
+		th.background = [4]float32(*tc.Background)
+	}
+	if tc.Foreground != nil {
+		th.foreground = [4]float32(*tc.Foreground)
+	}
+	if tc.Selection != nil {
+		th.selection = [4]float32(*tc.Selection)
+	}
+	if tc.Cursor != nil {
+		tint := [4]float32(*tc.Cursor)
+		th.cursor = &tint
+	}
+	for i, c := range tc.ANSI {
+		th.base16[i] = c.packed()
+	}
+	for i, c := range tc.Bright {
+		th.base16[ansiColors+i] = c.packed()
+	}
 	return nil
 }
 

@@ -45,6 +45,7 @@ const (
 	actionPrevTab
 	actionCopy
 	actionPaste
+	actionToggleTheme
 
 	// goto_tab_1 through goto_tab_9, named and bound in init rather than written out.
 	actionGotoTab1
@@ -78,6 +79,7 @@ var actionNames = map[string]action{
 	"prev_tab":         actionPrevTab,
 	"copy":             actionCopy,
 	"paste":            actionPaste,
+	"toggle_theme":     actionToggleTheme,
 }
 
 // keybinds is the live table, and these are the defaults. Ctrl+Shift is nearly all of it
@@ -109,6 +111,8 @@ var keybinds = map[action]chord{
 
 	actionCopy:  {glfw.KeyC, glfw.ModControl | glfw.ModShift},
 	actionPaste: {glfw.KeyV, glfw.ModControl | glfw.ModShift},
+
+	actionToggleTheme: {glfw.KeyL, glfw.ModControl | glfw.ModShift},
 }
 
 // Ctrl+Shift+N rather than the Alt+N other terminals use, to keep to the one modifier
@@ -177,6 +181,8 @@ func (a *app) dispatch(act action) {
 		a.copySelection()
 	case actionPaste:
 		a.pasteClipboard()
+	case actionToggleTheme:
+		a.setDark(!darkMode)
 	default:
 		if act >= actionGotoTab1 && act < numActions {
 			a.gotoTab(int(act - actionGotoTab1))

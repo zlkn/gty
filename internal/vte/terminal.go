@@ -45,6 +45,8 @@ type Options struct {
 	// ReportColor answers OSC 10 and 11 at sixteen bits a channel, which is how an app tells
 	// a light theme from a dark one. nil leaves them unanswered.
 	ReportColor func(code int) (r, g, b uint16, ok bool)
+
+	Dark func() bool
 }
 
 type Frame struct {
@@ -75,6 +77,7 @@ type Terminal struct {
 	appCursor      bool // DECCKM
 	appKeypad      bool // DECKPAM
 	bracketedPaste bool // DECSET 2004
+	themeReports   bool // DECSET 2031
 	title          string
 	cwd            string // the last OSC 7; "" until the shell reports one
 
@@ -91,6 +94,7 @@ type Terminal struct {
 	updates     chan struct{}
 	wake        func()
 	reportColor func(code int) (r, g, b uint16, ok bool)
+	dark        func() bool
 }
 
 func New(cols, rows int) *Terminal {
@@ -122,7 +126,7 @@ func (t *Terminal) Attach(o Options) error {
 		return nil
 	}
 	t.shape, t.shapeDefault = o.CursorShape, o.CursorShape
-	t.wake, t.reportColor = o.Wake, o.ReportColor
+	t.wake, t.reportColor, t.dark = o.Wake, o.ReportColor, o.Dark
 
 	cols, rows := t.Size()
 	var err error

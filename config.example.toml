@@ -26,10 +26,11 @@ decorations = false
 shape = "block"
 
 [colors]
-# background = "#2e2e32"
-# foreground = "#a1a1a1"
-# foreground = "#57606a"
+# light, dark, or system to follow the desktop's colour scheme (the XDG portal on Linux).
+# toggle_theme switches between the two either way.
+theme = "system"
 
+[colors.light]
 background = "#ebebed"
 foreground = "#424242"
 selection = "#d9d9d9"
@@ -43,6 +44,22 @@ ansi = [
 bright = [
   "#8e8e86", "#b81a6b", "#1e763c", "#8d5b00",
   "#015493", "#75228e", "#007474", "#1f1f1f",
+]
+
+[colors.dark]
+background = "#2e2e32"
+foreground = "#a1a1a1"
+selection = "#45454b"
+cursor = "#20bbfc"
+
+ansi = [
+  "#1a1b20", "#e06c75", "#98c379", "#e5c07b",
+  "#61afef", "#c678dd", "#56b6c2", "#d9dee7",
+]
+
+bright = [
+  "#7f848e", "#ef8b93", "#b3d99a", "#f0d3a0",
+  "#8cc4f5", "#d79ae8", "#7fcdd7", "#ffffff",
 ]
 
 [keys]
@@ -66,6 +83,8 @@ next_tab  = "ctrl+tab"
 prev_tab  = "ctrl+shift+tab"
 copy      = "ctrl+shift+c"
 paste     = "ctrl+shift+v"
+
+toggle_theme = "ctrl+shift+l"
 
 # goto_tab_1 through goto_tab_9 jump straight to a tab; the rest follow this one
 goto_tab_1 = "alt+1"

@@ -25,14 +25,16 @@ func keepConfig(t *testing.T) {
 	family, size, gamma := fontFamily, fontSize, fontGamma
 	boxes, frame, blend := fontBoxDrawing, windowDecorations, fontBlend
 	binds, bound := maps.Clone(keybinds), maps.Clone(boundKeys)
+	light, dark, mode, system := lightTheme, darkTheme, darkMode, followSystem
 	t.Cleanup(func() {
+		lightTheme, darkTheme, darkMode, followSystem = light, dark, mode, system
 		backgroundRGBA, foreground, selectionColor, base16 = bg, fg, sel, named
 		cursorTint, cursorShapeDefault = tint, shape
 		fontFamily, fontSize, fontGamma = family, size, gamma
 		fontBoxDrawing, windowDecorations = boxes, frame
 		fontBlend, blendUsed = blend, blend
 		keybinds, boundKeys = binds, bound
-		refreshTheme()
+		applyTheme()
 	})
 }
 
@@ -97,7 +99,7 @@ func TestLoadConfigKeepsDefaultsForAbsentKeys(t *testing.T) {
 	keepConfig(t)
 	fg, sel, named := foreground, selectionColor, base16
 
-	path := writeConfig(t, "[colors]\nbackground = \"#ffffff\"\n")
+	path := writeConfig(t, "[colors.light]\nbackground = \"#ffffff\"\n")
 	if err := loadConfig(path); err != nil {
 		t.Fatal(err)
 	}
@@ -145,7 +147,7 @@ func TestLoadConfigCursor(t *testing.T) {
 	keepConfig(t)
 
 	if err := loadConfig(writeConfig(t,
-		"[cursor]\nshape = \" Bar \"\n\n[colors]\ncursor = \"#ff0000\"\n")); err != nil {
+		"[cursor]\nshape = \" Bar \"\n\n[colors.light]\ncursor = \"#ff0000\"\n")); err != nil {
 		t.Fatal(err)
 	}
 	if cursorShapeDefault != vte.CursorBar {
@@ -289,11 +291,12 @@ func TestLoadConfigErrors(t *testing.T) {
 	tests := []struct {
 		name, body, want string
 	}{
-		{"bad colour", "[colors]\nbackground = \"#gg0000\"\n", "bad colour"},
-		{"short ansi", "[colors]\nansi = [\"#000000\"]\n", "colors.ansi has 1 entries"},
-		{"long bright", "[colors]\nbright = [\"#000000\", \"#000000\", \"#000000\", \"#000000\", \"#000000\", \"#000000\", \"#000000\", \"#000000\", \"#000000\"]\n", "colors.bright has 9 entries"},
+		{"bad colour", "[colors.light]\nbackground = \"#gg0000\"\n", "bad colour"},
+		{"short ansi", "[colors.dark]\nansi = [\"#000000\"]\n", "colors.dark.ansi has 1 entries"},
+		{"long bright", "[colors.light]\nbright = [\"#000000\", \"#000000\", \"#000000\", \"#000000\", \"#000000\", \"#000000\", \"#000000\", \"#000000\", \"#000000\"]\n", "colors.light.bright has 9 entries"},
 		{"not toml", "[colors\nbackground =\n", "expected"},
-		{"not a string", "[colors]\nbackground = 7\n", "background"},
+		{"not a string", "[colors.light]\nbackground = 7\n", "background"},
+		{"unknown theme", "[colors]\ntheme = \"sepia\"\n", "colors.theme"},
 		{"gamma at zero", "[font]\ngamma = 0\n", "font.gamma"},
 		{"gamma out of range", "[font]\ngamma = 12\n", "font.gamma"},
 		{"size out of range", "[font]\nsize = 0\n", "font.size"},
@@ -355,11 +358,39 @@ func TestLoadConfigMissingFile(t *testing.T) {
 func TestLoadConfigUnknownKey(t *testing.T) {
 	keepConfig(t)
 
-	path := writeConfig(t, "[colors]\nforground = \"#ffffff\"\nbackground = \"#000000\"\n")
+	path := writeConfig(t, "[colors.light]\nforground = \"#ffffff\"\nbackground = \"#000000\"\n")
 	if err := loadConfig(path); err != nil {
 		t.Fatal(err)
 	}
 	if want := [4]float32{0, 0, 0, 1}; backgroundRGBA != want {
 		t.Errorf("background is %v, want %v", backgroundRGBA, want)
+	}
+}
+
+func TestLoadConfigThemes(t *testing.T) {
+	keepConfig(t)
+	light := lightTheme
+
+	path := writeConfig(t, "[colors]\ntheme = \"dark\"\n\n[colors.dark]\nbackground = \"#000000\"\n")
+	if err := loadConfig(path); err != nil {
+		t.Fatal(err)
+	}
+	if !darkMode || followSystem {
+		t.Errorf("theme = dark left darkMode %v, followSystem %v", darkMode, followSystem)
+	}
+	if want := [4]float32{0, 0, 0, 1}; backgroundRGBA != want {
+		t.Errorf("background is %v, want the dark theme's %v", backgroundRGBA, want)
+	}
+	if foreground != darkTheme.foreground || base16 != darkTheme.base16 {
+		t.Error("the live colours are not the dark theme's")
+	}
+	if lightTheme != light {
+		t.Error("a dark-only config changed the light theme")
+	}
+
+	darkMode = false
+	applyTheme()
+	if backgroundRGBA != light.background || base16 != light.base16 {
+		t.Error("switching back did not restore the light theme")
 	}
 }

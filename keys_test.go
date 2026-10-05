@@ -103,6 +103,7 @@ func TestDefaultKeybinds(t *testing.T) {
 		"prev_tab":         "ctrl+shift+tab",
 		"copy":             "ctrl+shift+c",
 		"paste":            "ctrl+shift+v",
+		"toggle_theme":     "ctrl+shift+l",
 	}
 	// The nine digits, which keys.go binds in a loop for the same reason.
 	for i := range numTabKeys {

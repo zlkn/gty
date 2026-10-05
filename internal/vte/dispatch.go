@@ -38,6 +38,10 @@ func (t *Terminal) csi(c CSI) {
 	// DECSCUSR is how vim and neovim mark their modes, and DECSTR is how a program puts the
 	// terminal back before it starts. The rest are dropped on purpose.
 	if len(c.Inter) > 0 {
+		if c.Private == '?' && string(c.Inter) == "$" && c.Final == 'p' {
+			t.reportMode(c.Raw(0))
+			return
+		}
 		if c.Private != 0 || len(c.Inter) != 1 {
 			return
 		}
@@ -58,6 +62,10 @@ func (t *Terminal) csi(c CSI) {
 			t.setModes(c.Params, true)
 		case 'l':
 			t.setModes(c.Params, false)
+		case 'n':
+			if c.Raw(0) == 996 && t.dark != nil {
+				t.reply(themeReport(t.dark()))
+			}
 		}
 		return
 	case '>':
@@ -217,6 +225,8 @@ func (t *Terminal) setModes(params []int, on bool) {
 			t.setMouseEnc(encURXVT, on)
 		case 2004: // bracketed paste
 			t.bracketedPaste = on
+		case 2031:
+			t.themeReports = on
 		}
 	}
 }
@@ -273,6 +283,7 @@ func (t *Terminal) esc(final byte, inter []byte) {
 		t.pri.reset()
 		t.resetMouse()
 		t.shape, t.appCursor, t.appKeypad = t.shapeDefault, false, false
+		t.themeReports = false
 	}
 }
 

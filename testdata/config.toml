@@ -1,6 +1,9 @@
 # Deliberately unlike the built-in theme: a test that passes against the defaults is
 # not testing the file.
 [colors]
+theme = "light"
+
+[colors.light]
 background = "#102030"
 foreground = "#a0b0c0"
 selection = "#40506080"

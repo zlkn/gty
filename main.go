@@ -111,13 +111,13 @@ func contentScale(w *glfw.Window) float64 {
 // The theme. These are the defaults; the config file replaces them before the first
 // frame, which is why nothing here may be baked into another initialiser.
 var (
+	// The live colours, copied out of lightTheme or darkTheme by applyTheme.
 	// backgroundRGBA is the source of truth: the clear value and the inverted glyph
 	// under a block cursor have to be the same colour, and two literals would drift.
-	backgroundRGBA = [4]float32{0.949, 0.949, 0.949, 1} // #f2f2f2
-	foreground     = [4]float32{0.259, 0.259, 0.259, 1} // #424242
+	backgroundRGBA, foreground [4]float32
 
 	// selectionColor also paints the dividers between panes.
-	selectionColor = [4]float32{0.851, 0.851, 0.851, 1} // #d9d9d9
+	selectionColor [4]float32
 
 	// cursorTint is colors.cursor, or nil to follow the foreground. A block draws its
 	// glyph in the background colour, so a tint near the background buys a visible cursor
@@ -182,7 +182,7 @@ func mix(a, b [4]float32, by float32) [4]float32 {
 func init() {
 	// glfw must talk to the window manager from the thread it was initialised on.
 	runtime.LockOSThread()
-	refreshTheme()
+	applyTheme()
 }
 
 type app struct {
@@ -229,6 +229,9 @@ type app struct {
 	dirty       atomic.Bool
 	needsLayout atomic.Bool
 
+	systemChanged atomic.Bool
+	systemDark    atomic.Bool
+
 	// Reused between frames: the painted cell backgrounds relayout builds.
 	paint []quad
 
@@ -269,6 +272,7 @@ func (a *app) ensureShell(p *pane) {
 		CursorShape: cursorShapeDefault,
 		Wake:        a.Damage,
 		ReportColor: reportThemeColor,
+		Dark:        func() bool { return darkMode },
 	}); err != nil {
 		// A pane with no shell still lays out and draws; better than refusing to open.
 		fmt.Fprintln(os.Stderr, "gty:", err)
@@ -437,6 +441,13 @@ func newApp() (*app, error) {
 	a.windowFocused = window.GetAttrib(glfw.Focused) == glfw.True
 	a.blinkEpoch, a.blinkShown = time.Now(), true
 
+	if followSystem {
+		if dark, ok := watchColorScheme(a.onSystemScheme); ok {
+			darkMode = dark
+			applyTheme()
+		}
+	}
+
 	// Lay out once here so a.panes is populated before the first pump: the shell
 	// starts writing its prompt the moment it is spawned.
 	a.relayout()
@@ -476,6 +487,7 @@ func (a *app) run() error {
 		}
 		a.syncFocus()
 		a.syncPointer()
+		a.syncSystemTheme()
 		if on := blinkOn(time.Since(a.blinkEpoch), a.windowFocused); on != a.blinkShown {
 			a.blinkShown = on
 			a.needsLayout.Store(true)

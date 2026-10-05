@@ -14,21 +14,8 @@ func resolveColor(c vte.Color, dflt [4]float32) [4]float32 {
 	return dflt
 }
 
-// base16 is the named end of the palette, for a light background — which means the two
-// ends swap roles: ANSI black is a light shade, and ANSI white is the ink a program gets
-// when it asks for the brightest thing it knows of.
-//
-// The six chromatic colours are dark enough to read on the paper, 5:1 and better. The
-// palette this replaces was picked for a #1a1b20 background and left behind when the
-// theme went light: on #f2f2f2 its green sat at 1.80:1 and its bright white at 1.12:1,
-// so a coloured ls listing was barely there and the brightest colour was invisible.
-//
-// Bright repeats them, black and white apart. A light theme has no headroom to brighten
-// into, and lightening a colour here would only take contrast away.
-var base16 = [16]uint32{
-	0xd1d1d1, 0xb81a6b, 0x1e763c, 0x8d5b00, 0x015493, 0x75228e, 0x007474, 0x424242,
-	0x57606a, 0xb81a6b, 0x1e763c, 0x8d5b00, 0x015493, 0x75228e, 0x007474, 0x085157,
-}
+// base16 is the named end of the palette, copied out of the active theme by applyTheme.
+var base16 [16]uint32
 
 // palette is the 256-colour table: the sixteen named colours, then the 6x6x6 cube and
 // the 24-step grey ramp exactly as xterm defines them, so an index means the same here
