@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=gty
+GenericName=Terminal
+Comment=GPU-accelerated terminal emulator
+Exec=gty
+Icon=utilities-terminal
+Terminal=false
+Categories=System;TerminalEmulator;
+Keywords=shell;prompt;command;commandline;
