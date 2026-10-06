@@ -19,6 +19,7 @@ mkdir -p "$stage/DEBIAN"
 install -Dm755 "$root/bin/gty" "$stage/usr/bin/gty"
 install -Dm644 packaging/deb/gty.desktop "$stage/usr/share/applications/gty.desktop"
 install -Dm644 config.example.toml "$stage/usr/share/doc/gty/config.example.toml"
+install -Dm644 -t "$stage/usr/share/doc/gty/themes" themes/*.toml
 {
 	printf 'gty bundles fonts compiled into the binary.\n\n'
 	printf '== JetBrains Mono Nerd Font: SIL Open Font License 1.1 ==\n\n'

@@ -3,10 +3,14 @@ package main
 // The config file is $XDG_CONFIG_HOME/gty/config.toml, or ~/.config/gty/config.toml.
 // Every key in it is optional: an absent one keeps the built-in default
 // See config.example.toml.
+//
+// Colours live apart from it, one theme per file in themes/ next to the config, so a
+// palette can be swapped or shared without touching the rest.
 
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"maps"
 	"os"
 	"path/filepath"
@@ -54,12 +58,16 @@ type fontConfig struct {
 	Blend *string `toml:"blend"`
 }
 
+// colorConfig names the two themes; ThemeLight and ThemeDark are file names in themes/
+// without the .toml.
 type colorConfig struct {
-	Theme *string     `toml:"theme"`
-	Light themeConfig `toml:"light"`
-	Dark  themeConfig `toml:"dark"`
+	Theme      *string `toml:"theme"`
+	ThemeLight *string `toml:"theme_light"`
+	ThemeDark  *string `toml:"theme_dark"`
 }
 
+// themeConfig is a whole theme file. Like the config, every key is optional, and an
+// absent one keeps the built-in theme's colour.
 type themeConfig struct {
 	Background *rgba  `toml:"background"`
 	Foreground *rgba  `toml:"foreground"`
@@ -121,7 +129,17 @@ func configPath() string {
 // absent, an explicit -config is not.
 func loadConfig(path string) error {
 	var cfg config
-	md, err := toml.DecodeFile(path, &cfg)
+	if err := decodeFile(path, &cfg); err != nil {
+		return err
+	}
+	if err := cfg.apply(filepath.Join(filepath.Dir(path), "themes")); err != nil {
+		return fmt.Errorf("%s: %w", path, err)
+	}
+	return nil
+}
+
+func decodeFile(path string, v any) error {
+	md, err := toml.DecodeFile(path, v)
 	if err != nil {
 		var pe toml.ParseError
 		if errors.As(err, &pe) {
@@ -136,15 +154,34 @@ func loadConfig(path string) error {
 	for _, key := range md.Undecoded() {
 		fmt.Fprintf(os.Stderr, "gty: %s: unknown key %s\n", path, key)
 	}
+	return nil
+}
 
-	if err := cfg.apply(); err != nil {
+// loadTheme reads themes/<name>.toml over th.
+func loadTheme(dir, key, name string, th *theme) error {
+	name = strings.TrimSpace(name)
+	if name == "" || name == "." || name == ".." || filepath.Base(name) != name {
+		return fmt.Errorf("colors.%s is %q, want the name of a file in %s", key, name, dir)
+	}
+	path := filepath.Join(dir, name+".toml")
+	var tc themeConfig
+	if err := decodeFile(path, &tc); err != nil {
+		// %v, not %w: a missing theme must not read as a missing config, which main
+		// lets pass in silence.
+		if errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("colors.%s: theme %q not found at %s", key, name, path)
+		}
+		return fmt.Errorf("colors.%s: %v", key, err)
+	}
+	if err := tc.apply(th); err != nil {
 		return fmt.Errorf("%s: %w", path, err)
 	}
 	return nil
 }
 
-// apply moves the file's settings into the globals they override.
-func (c config) apply() error {
+// apply moves the file's settings into the globals they override. themes is the
+// directory the named themes are read from.
+func (c config) apply(themes string) error {
 	if err := c.applyKeys(); err != nil {
 		return err
 	}
@@ -206,23 +243,28 @@ func (c config) apply() error {
 			return fmt.Errorf("colors.theme is %q, want light, dark or system", *t)
 		}
 	}
-	if err := cl.Light.apply(&lightTheme, "colors.light"); err != nil {
-		return err
+	// Both, whichever is showing: toggle_theme and the desktop switch between them later.
+	if n := cl.ThemeLight; n != nil {
+		if err := loadTheme(themes, "theme_light", *n, &lightTheme); err != nil {
+			return err
+		}
 	}
-	if err := cl.Dark.apply(&darkTheme, "colors.dark"); err != nil {
-		return err
+	if n := cl.ThemeDark; n != nil {
+		if err := loadTheme(themes, "theme_dark", *n, &darkTheme); err != nil {
+			return err
+		}
 	}
 
 	applyTheme()
 	return nil
 }
 
-func (tc themeConfig) apply(th *theme, name string) error {
+func (tc themeConfig) apply(th *theme) error {
 	if n := len(tc.ANSI); n != 0 && n != ansiColors {
-		return fmt.Errorf("%s.ansi has %d entries, want %d", name, n, ansiColors)
+		return fmt.Errorf("ansi has %d entries, want %d", n, ansiColors)
 	}
 	if n := len(tc.Bright); n != 0 && n != ansiColors {
-		return fmt.Errorf("%s.bright has %d entries, want %d", name, n, ansiColors)
+		return fmt.Errorf("bright has %d entries, want %d", n, ansiColors)
 	}
 
 	if tc.Background != nil {

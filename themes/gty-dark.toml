@@ -1,0 +1,14 @@
+background = "#2e2e32"
+foreground = "#a1a1a1"
+selection = "#45454b"
+cursor = "#20bbfc"
+
+ansi = [
+  "#1a1b20", "#e06c75", "#98c379", "#e5c07b",
+  "#61afef", "#c678dd", "#56b6c2", "#d9dee7",
+]
+
+bright = [
+  "#7f848e", "#ef8b93", "#b3d99a", "#f0d3a0",
+  "#8cc4f5", "#d79ae8", "#7fcdd7", "#ffffff",
+]

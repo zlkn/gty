@@ -40,7 +40,23 @@ func keepConfig(t *testing.T) {
 
 func writeConfig(t *testing.T, body string) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "config.toml")
+	return writeConfigThemes(t, body, nil)
+}
+
+// writeConfigThemes lays out a config directory: config.toml, and themes/<name>.toml for
+// each entry of themes.
+func writeConfigThemes(t *testing.T, body string, themes map[string]string) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "themes"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, theme := range themes {
+		if err := os.WriteFile(filepath.Join(dir, "themes", name+".toml"), []byte(theme), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	path := filepath.Join(dir, "config.toml")
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -99,7 +115,8 @@ func TestLoadConfigKeepsDefaultsForAbsentKeys(t *testing.T) {
 	keepConfig(t)
 	fg, sel, named := foreground, selectionColor, base16
 
-	path := writeConfig(t, "[colors.light]\nbackground = \"#ffffff\"\n")
+	path := writeConfigThemes(t, "[colors]\ntheme_light = \"white\"\n",
+		map[string]string{"white": "background = \"#ffffff\"\n"})
 	if err := loadConfig(path); err != nil {
 		t.Fatal(err)
 	}
@@ -146,8 +163,9 @@ func TestColorParsing(t *testing.T) {
 func TestLoadConfigCursor(t *testing.T) {
 	keepConfig(t)
 
-	if err := loadConfig(writeConfig(t,
-		"[cursor]\nshape = \" Bar \"\n\n[colors.light]\ncursor = \"#ff0000\"\n")); err != nil {
+	if err := loadConfig(writeConfigThemes(t,
+		"[cursor]\nshape = \" Bar \"\n\n[colors]\ntheme_light = \"red\"\n",
+		map[string]string{"red": "cursor = \"#ff0000\"\n"})); err != nil {
 		t.Fatal(err)
 	}
 	if cursorShapeDefault != vte.CursorBar {
@@ -291,11 +309,7 @@ func TestLoadConfigErrors(t *testing.T) {
 	tests := []struct {
 		name, body, want string
 	}{
-		{"bad colour", "[colors.light]\nbackground = \"#gg0000\"\n", "bad colour"},
-		{"short ansi", "[colors.dark]\nansi = [\"#000000\"]\n", "colors.dark.ansi has 1 entries"},
-		{"long bright", "[colors.light]\nbright = [\"#000000\", \"#000000\", \"#000000\", \"#000000\", \"#000000\", \"#000000\", \"#000000\", \"#000000\", \"#000000\"]\n", "colors.light.bright has 9 entries"},
 		{"not toml", "[colors\nbackground =\n", "expected"},
-		{"not a string", "[colors.light]\nbackground = 7\n", "background"},
 		{"unknown theme", "[colors]\ntheme = \"sepia\"\n", "colors.theme"},
 		{"gamma at zero", "[font]\ngamma = 0\n", "font.gamma"},
 		{"gamma out of range", "[font]\ngamma = 12\n", "font.gamma"},
@@ -320,6 +334,63 @@ func TestLoadConfigErrors(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), tc.want) {
 				t.Errorf("error is %q, want it to mention %q", err, tc.want)
+			}
+		})
+	}
+}
+
+// TestLoadThemeErrors: a theme file is checked the way the config is, and its errors
+// name the file they are in.
+func TestLoadThemeErrors(t *testing.T) {
+	tests := []struct {
+		name, theme, want string
+	}{
+		{"bad colour", "background = \"#gg0000\"\n", "bad colour"},
+		{"short ansi", "ansi = [\"#000000\"]\n", "x.toml: ansi has 1 entries"},
+		{"long bright", "bright = [\"#000000\", \"#000000\", \"#000000\", \"#000000\", \"#000000\", \"#000000\", \"#000000\", \"#000000\", \"#000000\"]\n", "x.toml: bright has 9 entries"},
+		{"not toml", "background =\n", "x.toml"},
+		{"not a string", "background = 7\n", "background"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			keepConfig(t)
+			err := loadConfig(writeConfigThemes(t, "[colors]\ntheme_dark = \"x\"\n",
+				map[string]string{"x": tc.theme}))
+			if err == nil {
+				t.Fatalf("%q loaded without an error", tc.theme)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("error is %q, want it to mention %q", err, tc.want)
+			}
+		})
+	}
+}
+
+// A theme that is named but not there is an error, and not one that reads as fs.ErrNotExist:
+// main lets that pass for the default config path, and would drop the whole file with it.
+func TestLoadConfigMissingTheme(t *testing.T) {
+	keepConfig(t)
+
+	err := loadConfig(writeConfig(t, "[colors]\ntheme_light = \"absent\"\n"))
+	if err == nil {
+		t.Fatal("a config naming a missing theme loaded")
+	}
+	if errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("a missing theme gave %v, which main would take for a missing config", err)
+	}
+	if !strings.Contains(err.Error(), "absent") {
+		t.Errorf("the error is %q; it has to name the theme", err)
+	}
+}
+
+// A theme name is a file name in themes/, not a path to wander off with.
+func TestLoadConfigThemeName(t *testing.T) {
+	for _, name := range []string{"", " ", ".", "..", "../config", "sub/x"} {
+		t.Run(name, func(t *testing.T) {
+			keepConfig(t)
+			err := loadConfig(writeConfig(t, "[colors]\ntheme_dark = \""+name+"\"\n"))
+			if err == nil || !strings.Contains(err.Error(), "colors.theme_dark") {
+				t.Errorf("theme_dark = %q gave %v, want an error about the name", name, err)
 			}
 		})
 	}
@@ -358,7 +429,8 @@ func TestLoadConfigMissingFile(t *testing.T) {
 func TestLoadConfigUnknownKey(t *testing.T) {
 	keepConfig(t)
 
-	path := writeConfig(t, "[colors.light]\nforground = \"#ffffff\"\nbackground = \"#000000\"\n")
+	path := writeConfigThemes(t, "[colors]\ntheme_light = \"typo\"\n",
+		map[string]string{"typo": "forground = \"#ffffff\"\nbackground = \"#000000\"\n"})
 	if err := loadConfig(path); err != nil {
 		t.Fatal(err)
 	}
@@ -371,7 +443,8 @@ func TestLoadConfigThemes(t *testing.T) {
 	keepConfig(t)
 	light := lightTheme
 
-	path := writeConfig(t, "[colors]\ntheme = \"dark\"\n\n[colors.dark]\nbackground = \"#000000\"\n")
+	path := writeConfigThemes(t, "[colors]\ntheme = \"dark\"\ntheme_dark = \"black\"\n",
+		map[string]string{"black": "background = \"#000000\"\n"})
 	if err := loadConfig(path); err != nil {
 		t.Fatal(err)
 	}
