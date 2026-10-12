@@ -50,8 +50,8 @@ var (
 )
 
 const (
-	initialWidth  = 900
-	initialHeight = 600
+	initialWidth  = 1400
+	initialHeight = 900
 	title         = "gty"
 
 	// Lengths in logical pixels, here and in the cursor block below: px turns them
