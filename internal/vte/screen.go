@@ -331,7 +331,6 @@ func (s *screen) backspace() {
 	s.curCol = max(s.curCol-1, 0)
 }
 
-// tab moves to the next stop, or to the last column.
 func (s *screen) tab() { s.tabForward(1) }
 
 // tabForward is CHT: n stops to the right, the last column when the stops run out.

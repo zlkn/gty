@@ -9,6 +9,8 @@ box_drawing = false
 # Anything above 1 with blend = "gamma" reads heavy — that knob existed to undo what
 # linear blending does to a half-covered pixel.
 gamma = 1.0
+# false leaves outlines as designed instead of snapping horizontal edges to whole pixels
+hinting = true
 
 # where a glyph's edge is mixed with what is behind it. "linear" is physically right and
 # drags antialiased colour towards grey; "gamma" keeps it saturated, and is what other

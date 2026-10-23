@@ -12,10 +12,9 @@ package font
 // ("<====>" -> 714, 711, 711, 711, 711, 713). Both are one glyph per cell, so
 // "one cell, one quad" holds; only Atlas.PadLeft grows to fit the overhang.
 //
-// This goes through harfbuzz rather than the shaping package on top of it: for a
-// 70-cell row of code the low-level buffer is ~1.6x faster with ~2.4x less
-// garbage (309 vs 502 us, 78 vs 188 KB), because shaping.Output computes
-// per-glyph extents and bounds that the atlas already accounts for.
+// This goes through harfbuzz rather than the shaping package on top of it:
+// shaping.Output computes per-glyph extents and bounds that the atlas already
+// accounts for, and pays for them in time and garbage.
 
 import (
 	"bytes"
@@ -40,8 +39,8 @@ var noLigatures = []harfbuzz.Feature{{
 	End:   harfbuzz.FeatureGlobalEnd,
 }}
 
-// Shaper maps runes to glyph IDs. One instance per FontManager, reusing a single
-// harfbuzz buffer, so it is not safe for concurrent use.
+// Shaper maps runes to glyph IDs for one face, reusing a single harfbuzz buffer,
+// so it is not safe for concurrent use.
 type Shaper struct {
 	face  *gotext.Face
 	font  *harfbuzz.Font
@@ -78,9 +77,8 @@ func NewShaper(src Source) (*Shaper, error) {
 //
 // Shape whole runs of uniform cells, not single cells: substitution is
 // contextual, so an isolated '=' is never a ligature. Pass ligatures=false for
-// runs that must not join up — the cell under the cursor, or across a selection
-// edge. That path is also ~17x cheaper (18 vs 314 us for 70 cells), since calt
-// is where essentially all of the shaping cost lives.
+// a run that must not join up, such as the cell under the cursor. That path is
+// also far cheaper, since calt is where nearly all of the shaping cost lives.
 func (s *Shaper) ShapeRow(dst []GID, row []rune, ligatures bool) ([]GID, bool) {
 	if len(row) == 0 {
 		return dst, true

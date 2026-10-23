@@ -1,12 +1,6 @@
 package vte
 
-// The Attr type (uint16) functions as a bitmask for ANSI SGR (Select Graphic Rendition) flags.
-// Each style occupies exactly 1 bit
-// AttrBold (1) — Bold text
-// AttrItalic (2) — Italic text
-// AttrUnderline (4) — Underlined text
-// AttrInverse (8) — Inverted colors (swaps foreground and background)
-// AttrFaint (16) — Dim/faint text
+// Attr is the set of SGR flags a cell carries.
 type Attr uint16
 
 const (

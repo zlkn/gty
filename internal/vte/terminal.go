@@ -328,11 +328,9 @@ func (t *Terminal) histLen() int {
 	return t.hist.len()
 }
 
-// Text extracts the session text between from and to, trimming trailing whitespace per line
-// and joining lines with "\n". Soft-wrapped lines are joined without a newline.
-// When block is true, each row is sliced across the column range [min(from.Col, to.Col), max(from.Col, to.Col)]
-// and joined with "\n".
-// If the selection range does not intersect the available session range (e.g. evicted history), Text returns "".
+// Text is the session text between from and to, trailing blanks trimmed per line. A
+// soft-wrapped line joins the next without a newline; block takes the same columns from
+// every row. "" when the range has left the history.
 func (t *Terminal) Text(from, to Pos, block bool) string {
 	t.mu.RLock()
 	defer t.mu.RUnlock()

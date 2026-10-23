@@ -401,7 +401,6 @@ func (t *text) plainRow(cells []vte.Cell, runes []rune, dst []font.GID) []font.G
 // styleAt is the face cell i is drawn in, defaulting past the end of the row.
 func styleAt(cells []vte.Cell, i int) font.Style { return styleOf(vte.CellAt(cells, i)) }
 
-// shapeRow shapes the row clipped to cols cells, appending to dst.
 func (t *text) shapeRow(cells []vte.Cell, cols int, dst []font.GID) []font.GID {
 	return t.shapeRuns(cells, cols, -1, dst)
 }
@@ -456,12 +455,7 @@ func (t *text) shapeRuns(cells []vte.Cell, cols, bare int, dst []font.GID) []fon
 // the shared instance buffer. Newlines inside a line's text are not handled.
 //
 // The frame is already the visible window, and cells past cols are dropped by shapeRow, so
-// only what shows gets shaped.
-//
-// Every cell gets a slot-sized quad offset back by the atlas padding, so a
-// ligature glyph that reaches over its neighbours lands where the font drew it.
-// Cell origins still step by CellWidth — calt in this font is monospace
-// preserving, one glyph per cell.
+// only what shows gets shaped. Every cell gets a slot-sized quad; see Atlas.
 func (t *text) Layout(panes []*pane, focused *pane, runs []chrome) {
 	t.instances = t.instances[:0]
 	a := t.fm.Atlas
@@ -470,8 +464,8 @@ func (t *text) Layout(panes []*pane, focused *pane, runs []chrome) {
 	cellW, cellH := float32(t.fm.CellWidth), float32(t.fm.CellHeight)
 	pad := float32(px(padding))
 
-	// The pane loop below without a history to window, a cursor to prise out of a
-	// ligature or a focus to dim by.
+	// Tab bar labels: the same per-cell quads as a pane, with no cursor, selection or
+	// dimming.
 	t.chrome = t.chrome[:0]
 	for _, c := range runs {
 		first := uint32(len(t.instances))
@@ -629,9 +623,8 @@ func (t *text) upload() {
 
 // Draw paints each pane's slice of the buffer, clipped to that pane.
 //
-// The scissor is load-bearing, not cosmetic: a quad is slot-sized and PadLeft is
-// about three cells wide on this face, so a ligature in a pane's first column
-// would otherwise paint over the pane to its left.
+// The scissor is load-bearing, not cosmetic: a quad reaches back PadLeft, so a
+// ligature in a pane's first column would otherwise paint over the pane to its left.
 func (t *text) Draw(pass *wgpu.RenderPassEncoder, panes []*pane, viewportW, viewportH uint32) {
 	if len(t.instances) == 0 {
 		return

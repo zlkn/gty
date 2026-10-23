@@ -10,8 +10,8 @@ package font
 // runes the face covers, which is exactly the index a fallback search needs.
 //
 // The index is built on first use and cached on disk by fontscan, because building it
-// means parsing every font on the machine: 2946 faces cost 712 ms here, and 0.2 ms
-// once cached. Nothing touches it until the config names a family or a rune goes
+// means parsing every font on the machine, which takes most of a second. Nothing
+// touches it until the config names a family or a rune goes
 // missing, so a session that needs neither never pays for it.
 
 import (

@@ -34,12 +34,10 @@ type selection struct {
 	dragging bool
 }
 
-// clear deactivates the selection.
 func (s *selection) clear() {
 	s.active = false
 }
 
-// empty reports whether the selection has nothing selected.
 func (s selection) empty() bool {
 	if !s.active {
 		return true
@@ -77,7 +75,6 @@ func (s selection) ordered() (lo, hi selPos) {
 	return lo, hi
 }
 
-// contains reports whether the cell at (seq, col) is part of the selection.
 func (s selection) contains(seq uint64, col int) bool {
 	if !s.active {
 		return false
@@ -150,7 +147,6 @@ func wordAt(cells []vte.Cell, col, cols int) (from, to int) {
 	return from, to
 }
 
-// clickTracker tracks mouse clicks to distinguish single, double, and triple clicks.
 type clickTracker struct {
 	pos    selPos
 	paneID int
@@ -158,7 +154,6 @@ type clickTracker struct {
 	count  int
 }
 
-// click registers a mouse click and returns the resulting click count (1, 2, or 3).
 func (c *clickTracker) click(paneID int, pos selPos, now time.Time) int {
 	const doubleClickInterval = 400 * time.Millisecond
 	if paneID == c.paneID && pos == c.pos && now.Sub(c.time) < doubleClickInterval {

@@ -42,9 +42,9 @@ const (
 	//
 	// The chain grows while the terminal runs: Options.Fallback is what it opens
 	// with, and Options.Finder appends to it the first time a rune turns up that
-	// nothing loaded can draw. One face is never enough — the Nerd Font-patched
-	// family carries the icons a prompt draws but 14 of the 192 dingbats, so a fish
-	// prompt asking for ✔ (U+2714) needs a face from somewhere else entirely.
+	// nothing loaded can draw. One face is never enough: the Nerd Font-patched
+	// family carries a prompt's icons but few dingbats, so ✔ (U+2714) has to come
+	// from somewhere else.
 	Fallback Style = NumStyles
 
 	// maxFaces: a Style is a byte, and the last value is SynthBox's. Reaching it means
@@ -217,7 +217,8 @@ type FontManager struct {
 
 	Atlas *Atlas
 
-	// The four styles, then the chain in search order. Atlas.rast is indexed the same way.
+	// The four styles, then every other face in the order it was loaded. Atlas.rast is
+	// indexed the same way.
 	faces []*face
 
 	finder Finder
@@ -359,10 +360,7 @@ func proportionalRunes(f *sfnt.Font, ppem fixed.Int26_6, cellW int) int {
 	return n
 }
 
-// Icons need a face of their own: the patcher's Mono variant fits every icon to the cell
-// *width*, and a cell is twice as tall as it is wide, so an icon comes out half the height
-// of the line. The wide variant fits them to a box a cell and a half across instead, which
-// is the size other terminals draw them at — Options.Icons is where that face goes.
+// The runes drawn from Options.Icons rather than the family.
 const (
 	iconPUALo, iconPUAHi     = 0xE000, 0xF8FF   // the BMP area: powerline, devicons, seti, ...
 	iconPlaneLo, iconPlaneHi = 0xF0000, 0xFFFFD // plane 15: Material Design, since Nerd Fonts v3
@@ -383,9 +381,7 @@ func isIconRune(r rune) bool {
 }
 
 // iconFace loads the wide variant onto this grid: the same family at the same size, so it
-// needs no fitting — it is one cell per glyph and one baseline with the text. Only its
-// icons are drawn bigger, and the room they reach into is reserved by glyphPadding, which
-// measures a face the atlas lets overhang.
+// needs no fitting. The room its icons reach into is reserved by glyphPadding.
 //
 // The geometry is checked because nothing else would: a file that advances differently
 // would put every icon a fraction of a cell off, which reads as a rendering bug rather
@@ -462,8 +458,8 @@ func medianAdvance(f *sfnt.Font, buf *sfnt.Buffer, ppem fixed.Int26_6) (fixed.In
 	return advances[len(advances)/2], nil
 }
 
-// NumFaces is the four styles plus however long the fallback chain is. Face numbers
-// below it are valid; Fallback..NumFaces-1 is the chain.
+// NumFaces is the four styles plus every face loaded after them. Face numbers below it
+// are valid.
 func (fm *FontManager) NumFaces() int { return len(fm.faces) }
 
 // face is nil past the end of the chain, which is what makes the fallback optional.
@@ -511,10 +507,8 @@ func (fm *FontManager) Close() error {
 
 // GlyphIndex maps a rune straight through cmap, skipping the shaper. Correct
 // only for cells that cannot ligate: substitution is contextual, so a run has to
-// go through Shaper.ShapeRow to come out right.
-//
-// This is the renderer's cheap path for rows with no ligature material, so it
-// reuses the face's buffer rather than allocating one per call.
+// go through Shaper.ShapeRow to come out right. The renderer falls back to it for a
+// row the shaper could not keep to one glyph per cell.
 func (fm *FontManager) GlyphIndex(s Style, r rune) (GID, bool) {
 	fc := fm.faces[s]
 	gid, err := fc.font.GlyphIndex(&fc.buf, r)
@@ -531,7 +525,7 @@ func (fm *FontManager) GlyphIndex(s Style, r rune) (GID, bool) {
 // rune, and what it turns up joins the chain. Every fallback is one face for all four
 // styles, so a missing glyph comes out upright in a bold run and costs one slot, not four.
 //
-// A rune nothing covers comes back as GID 0 — the box, so a hole reads as missing.
+// A rune nothing covers comes back as GID 0.
 func (fm *FontManager) Resolve(s Style, gid GID, r rune) Key {
 	// Before the face is consulted: whatever glyph the family carries for a frame is not
 	// wanted. The rune is the GID, which the range fits with room to spare.

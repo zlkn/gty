@@ -12,10 +12,7 @@ type theme struct {
 // ends swap roles: ANSI black is a light shade, and ANSI white is the ink a program gets
 // when it asks for the brightest thing it knows of.
 //
-// The six chromatic colours are dark enough to read on the paper, 5:1 and better. The
-// palette this replaces was picked for a #1a1b20 background and left behind when the
-// theme went light: on #f2f2f2 its green sat at 1.80:1 and its bright white at 1.12:1,
-// so a coloured ls listing was barely there and the brightest colour was invisible.
+// The six chromatic colours are dark enough to read on the paper, 5:1 and better.
 //
 // Bright repeats them, black and white apart. A light theme has no headroom to brighten
 // into, and lightening a colour here would only take contrast away.

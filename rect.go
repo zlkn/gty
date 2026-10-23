@@ -22,8 +22,8 @@ type rectInstance struct {
 	color [4]float32
 }
 
-// rects draws flat colour quads: the pane dividers today, the cursor and the
-// selection later.
+// rects draws flat colour quads: the tab bar, painted cells, the selection, the
+// dividers and the cursors.
 type rects struct {
 	device *wgpu.Device
 	queue  *wgpu.Queue
@@ -93,8 +93,8 @@ func newRects(device *wgpu.Device, queue *wgpu.Queue, format wgpu.TextureFormat)
 			EntryPoint: "fs_main",
 			Targets: []wgpu.ColorTargetState{{
 				Format: format,
-				// Blending although dividers are opaque, so a translucent selection
-				// can reuse this pipeline unchanged.
+				// Blending although most quads are opaque, so a theme colour with
+				// alpha still draws right.
 				Blend: &wgpu.BlendState{
 					Color: wgpu.BlendComponent{
 						SrcFactor: wgpu.BlendFactorSrcAlpha,
@@ -135,12 +135,10 @@ func newRects(device *wgpu.Device, queue *wgpu.Queue, format wgpu.TextureFormat)
 	return r, nil
 }
 
-// Reset drops the quad list.
 func (r *rects) Reset() { r.instances = r.instances[:0] }
 
-// Add appends one group of quads in a single colour. Groups differ only by colour —
-// dividers, then each pane's cursor — so they share one buffer and one upload rather
-// than a draw call each.
+// Add appends one group of quads in a single colour. Every group shares one buffer and
+// one upload rather than a draw call each.
 //
 // Empty rects are dropped: a split too narrow to divide produces them, and so does a
 // cursor shape clamped into a degenerate cell.

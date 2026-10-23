@@ -28,15 +28,16 @@ func (t *Terminal) execute(b byte) {
 	case 0x0F: // SI puts G0 back
 		t.scr.gl = 0
 	}
-	// BEL and the rest are dropped. A visual bell is not this milestone's problem.
+	// BEL and the rest are dropped.
 }
 
 // csi acts on a control sequence. Queries cannot wait: fish probes at every startup and draws
 // nothing until answered, and DA1 is the barrier it hangs on.
 func (t *Terminal) csi(c CSI) {
-	// Sequences carrying an intermediate are their own small family. Two of them matter:
-	// DECSCUSR is how vim and neovim mark their modes, and DECSTR is how a program puts the
-	// terminal back before it starts. The rest are dropped on purpose.
+	// Sequences carrying an intermediate are their own small family. Three of them matter:
+	// DECRQM is how a program asks whether theme reports are on, DECSCUSR is how vim and
+	// neovim mark their modes, and DECSTR is how a program puts the terminal back before it
+	// starts. The rest are dropped on purpose.
 	if len(c.Inter) > 0 {
 		if c.Private == '?' && string(c.Inter) == "$" && c.Final == 'p' {
 			t.reportMode(c.Raw(0))

@@ -36,9 +36,8 @@ type Key struct {
 
 // Atlas is the baked glyph sheet, keyed by style and glyph ID.
 //
-// Every style shares one sheet. They agree on the slot size (NewManager rejects
-// faces that do not), so the slots tile as a single grid and the renderer needs
-// one texture and one bind group for all four.
+// Every face shares one sheet of equal slots, so the renderer needs one texture
+// and one bind group for all of them.
 //
 // Pix is padded to StrideAlign while Rect keeps the real width: image/draw and
 // the rasterizer honour Stride, so nothing downstream has to know, and UVs
@@ -83,8 +82,8 @@ type Atlas struct {
 	// is a sheet 9225 px wide, past what any GPU will allocate. Only the glyphs a
 	// session actually reaches are ever rasterised, and the sheet grows rows to suit.
 	//
-	// No lock guards any of this. Everything that touches the atlas — the parser,
-	// the layout pass, the upload — runs on the main thread.
+	// No lock guards any of this. Everything that touches the atlas — the layout
+	// pass, the fallback search, the upload — runs on the main thread.
 	rast    []*rasterizer
 	free    int   // next unbaked slot
 	dirty   []int // slots written since the last TakeDirty
@@ -96,10 +95,7 @@ type Atlas struct {
 }
 
 // Ensure is the key's position in texture coordinates, rasterising it into the sheet
-// if this is the first time it has been asked for.
-//
-// A glyph the face does not have — GID 0 — comes back as the replacement box, so a
-// missing character leaves a visible hole rather than a silent one.
+// if this is the first time it has been asked for. GID 0 comes back as the notdef box.
 func (a *Atlas) Ensure(k Key) (u, v float32) {
 	i := a.notdef
 	if k.GID != 0 {
@@ -176,7 +172,7 @@ func (a *Atlas) addFace(fc *face) {
 // fitBox is the box a glyph from a fitted face has to stay inside: its own cell, plus the
 // bleed to the right that the family's glyphs were measured for.
 //
-// Not the whole slot: PadLeft is three cells of ligature reach-back, and a fallback
+// Not the whole slot: PadLeft is ligature reach-back, and a fallback
 // character spilling that far would be painted over the words before it.
 //
 // The line is the hard limit, though — a fitted face is sized on its median glyph, so the
@@ -200,7 +196,6 @@ func (a *Atlas) TakeDirty() []int {
 	return d
 }
 
-// SlotRect is slot i in atlas pixels.
 func (a *Atlas) SlotRect(i int) image.Rectangle { return a.slotRect(i) }
 
 func (a *Atlas) slotRect(i int) image.Rectangle {
@@ -220,7 +215,6 @@ func (a *Atlas) slotUV(i int) (u, v float32) {
 	return float32(r.Min.X) / float32(a.Img.Rect.Dx()), float32(r.Min.Y) / float32(a.Img.Rect.Dy())
 }
 
-// Slot returns the key's slot in atlas pixels, if it has been baked.
 func (a *Atlas) Slot(k Key) (image.Rectangle, bool) {
 	i, ok := a.slot[k]
 	if !ok {
@@ -229,8 +223,6 @@ func (a *Atlas) Slot(k Key) (image.Rectangle, bool) {
 	return a.slotRect(i), true
 }
 
-// GlyphUV returns the top-left corner of the key's slot in texture coordinates.
-// ok is false for a glyph that was never baked.
 func (a *Atlas) GlyphUV(k Key) (u, v float32, ok bool) {
 	slot, ok := a.Slot(k)
 	if !ok {
@@ -240,7 +232,6 @@ func (a *Atlas) GlyphUV(k Key) (u, v float32, ok bool) {
 		float32(slot.Min.Y) / float32(a.Img.Rect.Dy()), true
 }
 
-// Glyphs is the baked set, in slot order.
 func (a *Atlas) Glyphs() []Key { return a.keys }
 
 // DumpPNG writes the atlas as grayscale, for eyeballing the baked sheet by hand.
@@ -263,11 +254,8 @@ func (a *Atlas) DumpPNG(path string) error {
 }
 
 // rasterizer draws glyphs by ID — the one thing xfont.Face cannot do, since its
-// whole API is keyed by rune.
-//
-// The arithmetic is opentype.Face.Glyph's, kept identical deliberately: it makes
-// this path produce pixel-for-pixel the same ASCII glyphs as the rune-keyed one
-// it replaces.
+// whole API is keyed by rune. The unhinted path keeps opentype.Face.Glyph's
+// arithmetic.
 type rasterizer struct {
 	f      *sfnt.Font
 	ppem   fixed.Int26_6
@@ -495,8 +483,8 @@ func scaleRect(ink image.Rectangle, dot fixed.Point26_6, scale float32) image.Re
 //
 // It has to hold for every glyph in every face, not only the ones baked at startup: a
 // glyph rasterised later cannot resize the grid it lands in. The font's own bounding
-// box is exactly that maximum and costs one lookup, where walking the glyphs costs
-// 46ms a face on a Nerd Font-patched file.
+// box is exactly that maximum and costs one lookup, where walking the glyphs is slow
+// on a Nerd Font-patched file.
 //
 // It is computed, never hardcoded. The ASCII range alone comes out L0 R1 T0 B0, and a
 // literal 1 would have survived a font swap and then quietly clipped every ligature:
@@ -582,8 +570,6 @@ func BakeAtlas(fm *FontManager, maxTexture int) (*Atlas, error) {
 
 	// As wide as the device allows, and only as tall as the eager bake needs. Cols is
 	// fixed for the life of the sheet so a slot never moves; height is what grows.
-	// Laying out a slot per glyph instead would be a 9225 px sheet on a Nerd
-	// Font-patched face — wider than any GPU will allocate.
 	a.Cols = maxTexture / a.SlotW
 	a.maxRows = maxTexture / a.SlotH
 	a.Rows = min((len(eager)+1+a.Cols-1)/a.Cols+spareRows, a.maxRows)
@@ -614,9 +600,7 @@ func BakeAtlas(fm *FontManager, maxTexture int) (*Atlas, error) {
 	return a, nil
 }
 
-// drawNotdef paints the replacement box: a hollow rectangle the size of a cell. A rune
-// the face has no glyph for is drawn with this instead of with nothing, so a missing
-// character reads as missing rather than as a space.
+// drawNotdef paints the replacement box: a hollow rectangle the size of a cell.
 func (a *Atlas) drawNotdef() {
 	box := a.cellBox(a.slotRect(a.notdef)).Inset(1)
 	if box.Dx() < 2 || box.Dy() < 2 {

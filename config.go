@@ -122,7 +122,7 @@ func configPath() string {
 	return filepath.Join(dir, "gty", "config.toml")
 }
 
-// loadConfig reads path into the theme.
+// loadConfig reads path into the settings and the themes it names.
 //
 // A missing file comes back as fs.ErrNotExist rather than as nothing to do, because
 // whether that is an error belongs to the caller: the default path is allowed to be
@@ -290,8 +290,8 @@ func (tc themeConfig) apply(th *theme) error {
 }
 
 // applyKeys merges the file's [keys] over the default bindings. Absent actions keep
-// their default, an empty string unbinds one, and anything the window manager does not
-// claim goes on reaching the shell.
+// their default, an empty string unbinds one, and a key no binding claims goes on
+// reaching the shell.
 func (c config) applyKeys() error {
 	binds := maps.Clone(keybinds)
 

@@ -1,6 +1,6 @@
 package main
 
-// The window manager's hotkeys. Everything here is a default: the [keys] section of the
+// gty's own hotkeys. Everything here is a default: the [keys] section of the
 // config file rebinds any of them by name, and an empty string unbinds. See
 // config.example.toml.
 
@@ -17,8 +17,8 @@ import (
 	"gty/internal/vte"
 )
 
-// action is one of the things the window manager does itself, as opposed to the far
-// larger set of keys it hands to the shell untouched.
+// action is one of the things gty does itself, as opposed to the far larger set of keys
+// it hands to the shell untouched.
 //
 // One more of these means four edits in this file: the constant, actionNames, keybinds
 // and the switch in dispatch. numActions holds the first three to each other; the fourth
@@ -139,7 +139,7 @@ func invertKeybinds() map[chord]action {
 	return m
 }
 
-// dispatch runs a bound action: the window manager's whole vocabulary, in one place.
+// dispatch runs a bound action: gty's whole vocabulary, in one place.
 func (a *app) dispatch(act action) {
 	switch act {
 	case actionQuit:
@@ -234,8 +234,7 @@ type chord struct {
 }
 
 // bindableMods is everything a chord may carry. Masked off the incoming modifiers so
-// that a lock key — which glfw only reports when asked to, but might be one day — cannot
-// stop a binding from matching.
+// that a lock key cannot stop a binding from matching.
 const bindableMods = glfw.ModShift | glfw.ModControl | glfw.ModAlt | glfw.ModSuper
 
 // modNames is spelled in the order chords print in, so the table doubles as that order.

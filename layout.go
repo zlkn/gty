@@ -133,7 +133,6 @@ func (p *pane) cellAt(at image.Point, cellW, cellH int) (row, col int) {
 	return row, col
 }
 
-// posAt returns the selPos for the cell under at.
 func (p *pane) posAt(at image.Point, cellW, cellH int) selPos {
 	row, col := p.cellAt(at, cellW, cellH)
 	var seq uint64
@@ -453,7 +452,7 @@ func paneTowards(panes []*pane, focused *pane, s side) *pane {
 func shared(alo, ahi, blo, bhi int) int { return min(ahi, bhi) - max(alo, blo) }
 
 // layoutTree gives every pane its rect and grid, and returns the leaves in layout
-// order — the order Ctrl+Tab walks — with the dividers between them.
+// order — the order focus_next walks — with the dividers between them.
 func layoutTree(root *node, r image.Rectangle, cellW, cellH int) (panes []*pane, dividers []image.Rectangle) {
 	pad := px(padding)
 	var walk func(n *node, r image.Rectangle)

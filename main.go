@@ -41,9 +41,8 @@ var (
 	fontBoxDrawing = true
 
 	// fontHinting runs the face's own bytecode over its outlines, snapping their horizontal
-	// edges to whole pixels. Off by default: the bytecode fits nothing sideways, so it
-	// sharpens a glyph built from horizontals far more than one built from stems, and the
-	// two then read unevenly together. Read when the atlas is baked.
+	// edges to whole pixels. The bytecode fits nothing sideways, so a glyph built from
+	// horizontals sharpens more than one built from stems. Read when the atlas is baked.
 	fontHinting = true
 
 	windowDecorations = true
@@ -75,9 +74,7 @@ const (
 	cursorOutlineWidth    = 1
 	underlineHeight       = 1
 
-	// cursorBlinkPeriod is one full on-off cycle. Blinking only runs while the window
-	// holds the focus, so an idle terminal still parks in WaitEvents and costs
-	// nothing; see run.
+	// cursorBlinkPeriod is one full on-off cycle.
 	cursorBlinkPeriod = 1200 * time.Millisecond
 )
 
@@ -148,8 +145,6 @@ var (
 // backgroundRGBA: it depends on the surface format too, and this runs from init and from
 // the config file, both long before there is an adapter to ask. See clearValue.
 func refreshTheme() {
-	// A block draws its glyph in the background colour, so the cursor has to be
-	// something that reads against it.
 	cursorColor = foreground
 	if cursorTint != nil {
 		cursorColor = *cursorTint
@@ -222,10 +217,9 @@ type app struct {
 	// keyClaimed is set by the key callback and read by the character one; see typed.
 	keyClaimed bool
 
-	// Atomic because the PTY reader will eventually set them from its own goroutine;
-	// see Damage. needsLayout is separate from dirty because the quads carry the text
-	// and the cursor: re-encoding a frame without relaying it out presents the
-	// previous one.
+	// Atomic because the PTY reader goroutine sets them through Damage. needsLayout is
+	// separate from dirty because the quads carry the text and the cursor: re-encoding a
+	// frame without relaying it out presents the previous one.
 	dirty       atomic.Bool
 	needsLayout atomic.Bool
 
@@ -235,7 +229,6 @@ type app struct {
 	// Reused between frames: the painted cell backgrounds relayout builds.
 	paint []quad
 
-	// Selection state: in-flight drag, click counter, I-beam cursor, and rects buffer.
 	drag     *pane
 	clicks   clickTracker
 	cursor   *glfw.Cursor
@@ -301,7 +294,6 @@ func main() {
 	flag.Parse()
 
 	if err := loadConfig(cmp.Or(*configFile, configPath())); err != nil {
-		// An absent config is only an error when it was asked for by name.
 		if *configFile != "" || !errors.Is(err, fs.ErrNotExist) {
 			fmt.Fprintln(os.Stderr, "gty:", err)
 			os.Exit(1)
@@ -362,8 +354,6 @@ func newApp() (*app, error) {
 	}
 	a.queue = a.device.GetQueue()
 
-	// Framebuffer pixels, not window units, so the surface is right on HiDPI
-	// from the first frame.
 	w, h := window.GetFramebufferSize()
 	caps := a.surface.GetCapabilities(adapter)
 	if len(caps.Formats) == 0 || len(caps.AlphaModes) == 0 {
@@ -457,8 +447,7 @@ func newApp() (*app, error) {
 
 // blinkOn is the cursor's on phase. Derived from the clock rather than counted, so a
 // late or coalesced wakeup cannot desynchronise it. An unfocused window holds the
-// cursor solid instead of blinking, which is what lets run go back to a plain
-// WaitEvents and cost nothing while idle.
+// cursor solid.
 func blinkOn(since time.Duration, focused bool) bool {
 	if !focused {
 		return true
@@ -552,8 +541,7 @@ func (a *app) pumpPTY() {
 }
 
 // Damage marks the window as needing a fresh layout and a repaint, and wakes the
-// event loop. Safe to call from any goroutine — this is how the PTY reader will drive
-// redraws.
+// event loop. Safe to call from any goroutine: the PTY reader drives redraws through it.
 func (a *app) Damage() {
 	a.needsLayout.Store(true)
 	a.dirty.Store(true)
@@ -585,7 +573,7 @@ func (a *app) onKey(key glfw.Key, mods glfw.ModifierKey) {
 	a.toShell(b)
 }
 
-// typed sends a character the window manager did not claim. Printable input arrives
+// typed sends a character no binding claimed. Printable input arrives
 // here rather than through onKey because glfw has already applied the layout, the
 // shift state and any dead keys by this point.
 //
@@ -814,7 +802,7 @@ func (a *app) scrollAt(w *glfw.Window, yoff float64) {
 	}
 	lines := int(yoff * wheelLines)
 	if lines == 0 && yoff != 0 {
-		lines = 1 // a touchpad's fractional notch still has to move something
+		lines = 1
 		if yoff < 0 {
 			lines = -1
 		}
@@ -1249,8 +1237,6 @@ func (a *app) focusTowards(s side) {
 // the key and do nothing, and a pane with none would scroll backwards.
 func (a *app) page() int { return max(1, a.focused.rows-1) }
 
-// relayout recomputes pane rects from the surface size and refills both instance
-// buffers.
 func (a *app) relayout() {
 	cellW, cellH := a.text.CellSize()
 	surface := image.Rect(0, 0, int(a.config.Width), int(a.config.Height))
@@ -1394,8 +1380,6 @@ func (a *app) render() error {
 	return nil
 }
 
-// ignoreTransient swallows the surface errors that are a normal part of
-// resizing or losing focus; anything else is a real failure.
 func ignoreTransient(err error) error {
 	s := err.Error()
 	switch {

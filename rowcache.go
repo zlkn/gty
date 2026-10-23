@@ -48,6 +48,6 @@ func (c *rowCache) fit(lines int) {
 	c.slots = make([]shapedRow, n)
 }
 
-// reset drops every entry, for the changes that reach past the grid: a new font, or a new
-// display scale.
+// reset drops every entry. Rows are shaped clipped to the grid's width, so a new width
+// stales them all.
 func (c *rowCache) reset() { clear(c.slots) }
