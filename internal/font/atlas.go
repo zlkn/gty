@@ -200,19 +200,15 @@ func (a *Atlas) fitBox(slot image.Rectangle, r *rasterizer) image.Rectangle {
 // wide places a glyph in the two cells ending with the slot's own: the one reached back
 // into and the slot's cell.
 //
-// A fitted face is scaled up to fill them. Fitted on its median advance, its glyphs come
-// out a cell wide, and an emoji left at that size sits in half its columns. The scale puts
+// The glyph is scaled up to fill them. Its face, the grid's own or one fitted on its median
+// advance, made it a cell wide, and a character left at that size sits in half its columns:
+// ⚠ followed by VS16 comes from the family itself. The scale puts
 // the glyph's advance across both cells, and its line is centred in the cell's height. Not
 // the line's height as well: an emoji face's line is far taller than its ink and would cap
 // the emoji at the size it started at. Ink that does overflow the cell is shrunk by draw.
-//
-// A face of the grid's own is placed and left at its size: it was designed for these cells.
 func (a *Atlas) wide(slot image.Rectangle, r *rasterizer, gid GID) (dot fixed.Point26_6, fit image.Rectangle, ppem fixed.Int26_6) {
 	cell := a.cellBox(slot)
 	box := image.Rect(cell.Min.X-cell.Dx(), cell.Min.Y, cell.Max.X, cell.Max.Y)
-	if !r.fit {
-		return fixed.P(box.Min.X, cell.Min.Y+r.ascent), image.Rectangle{}, r.ppem
-	}
 	m, err := r.f.Metrics(&r.buf, r.ppem, Hinting)
 	adv, aerr := r.f.GlyphAdvance(&r.buf, gid, r.ppem, Hinting)
 	line := m.Ascent + m.Descent
@@ -315,10 +311,10 @@ type rasterizer struct {
 // zero rectangle, is a box the ink is shrunk into and centred in; clip is the hard boundary,
 // so nothing is scribbled over a neighbouring slot.
 //
-// ppem is the face's own except for a wide glyph, which is never drawn from a hinted face at
-// any other: hinting is only parsed for the grid's own faces, and wide leaves those unscaled.
+// ppem is the face's own except for a wide glyph, which is drawn from the plain outline: the
+// face's bytecode fits it to the grid at its own size, and scaling a fitted outline undoes it.
 func (r *rasterizer) draw(dst *image.Alpha, gid GID, ppem fixed.Int26_6, dot fixed.Point26_6, fit, clip image.Rectangle) error {
-	if r.hinted != nil {
+	if r.hinted != nil && ppem == r.ppem {
 		return r.drawHinted(dst, gid, dot, clip)
 	}
 	segs, err := r.f.LoadGlyph(&r.buf, gid, ppem, nil)
