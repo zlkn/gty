@@ -36,7 +36,7 @@ func TestOneGlyphPerCell(t *testing.T) {
 		// A glyph the shaper can emit but the atlas never baked renders as a
 		// hole on screen. This is the safety net on the GSUB walk in GlyphSet.
 		for i, gid := range gids {
-			if _, baked := fm.Atlas.Slot(Key{Regular, gid}); !baked {
+			if _, baked := fm.Atlas.Slot(Key{Style: Regular, GID: gid}); !baked {
 				t.Errorf("%q cell %d (%q): glyph %d is not in the atlas", line, i, runes[i], gid)
 			}
 		}
@@ -58,10 +58,10 @@ func TestLigatureShape(t *testing.T) {
 		t.Errorf(`"=>" was not substituted: first cell is still the plain '=' (glyph %d)`, plainEq)
 	}
 
-	if _, inked := slotInk(t, fm.Atlas, Key{Regular, gids[0]}); inked {
+	if _, inked := slotInk(t, fm.Atlas, Key{Style: Regular, GID: gids[0]}); inked {
 		t.Errorf("first cell (glyph %d) carries ink, want a blank spacer", gids[0])
 	}
-	box, inked := slotInk(t, fm.Atlas, Key{Regular, gids[1]})
+	box, inked := slotInk(t, fm.Atlas, Key{Style: Regular, GID: gids[1]})
 	if !inked {
 		t.Fatalf("second cell (glyph %d) is blank, the ligature is missing", gids[1])
 	}
@@ -168,7 +168,7 @@ func TestRenderRowComposesLigature(t *testing.T) {
 func keysOf(gids []GID) []Key {
 	keys := make([]Key, len(gids))
 	for i, gid := range gids {
-		keys[i] = Key{Regular, gid}
+		keys[i] = Key{Style: Regular, GID: gid}
 	}
 	return keys
 }

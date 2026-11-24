@@ -32,6 +32,11 @@ const (
 type Key struct {
 	Style Style
 	GID   GID
+
+	// Wide is the glyph baked across two cells, for a character the grid gives two columns.
+	// It is drawn from the second of them and reaches back over the first, the way a
+	// ligature does, so it fits the slot every other glyph has.
+	Wide bool
 }
 
 // Atlas is the baked glyph sheet, keyed by style and glyph ID.
@@ -125,7 +130,11 @@ func (a *Atlas) bake(k Key) (int, error) {
 		r := a.rast[k.Style]
 		// The face's own baseline, not the grid's: a fitted face sits on a line of its own.
 		dot := fixed.P(slot.Min.X+a.PadLeft, slot.Min.Y+a.PadTop+r.ascent)
-		if err := r.draw(a.Img, k.GID, dot, a.fitBox(slot, r), slot); err != nil {
+		fit, ppem := a.fitBox(slot, r), r.ppem
+		if k.Wide {
+			dot, fit, ppem = a.wide(slot, r, k.GID)
+		}
+		if err := r.draw(a.Img, k.GID, ppem, dot, fit, slot); err != nil {
 			return 0, err
 		}
 	}
@@ -186,6 +195,37 @@ func (a *Atlas) fitBox(slot image.Rectangle, r *rasterizer) image.Rectangle {
 	}
 	cell := a.cellBox(slot)
 	return image.Rect(cell.Min.X, cell.Min.Y, slot.Max.X, cell.Max.Y)
+}
+
+// wide places a glyph in the two cells ending with the slot's own: the one reached back
+// into and the slot's cell.
+//
+// A fitted face is scaled up to fill them. Fitted on its median advance, its glyphs come
+// out a cell wide, and an emoji left at that size sits in half its columns. The scale puts
+// the glyph's advance across both cells, and its line is centred in the cell's height. Not
+// the line's height as well: an emoji face's line is far taller than its ink and would cap
+// the emoji at the size it started at. Ink that does overflow the cell is shrunk by draw.
+//
+// A face of the grid's own is placed and left at its size: it was designed for these cells.
+func (a *Atlas) wide(slot image.Rectangle, r *rasterizer, gid GID) (dot fixed.Point26_6, fit image.Rectangle, ppem fixed.Int26_6) {
+	cell := a.cellBox(slot)
+	box := image.Rect(cell.Min.X-cell.Dx(), cell.Min.Y, cell.Max.X, cell.Max.Y)
+	if !r.fit {
+		return fixed.P(box.Min.X, cell.Min.Y+r.ascent), image.Rectangle{}, r.ppem
+	}
+	m, err := r.f.Metrics(&r.buf, r.ppem, Hinting)
+	adv, aerr := r.f.GlyphAdvance(&r.buf, gid, r.ppem, Hinting)
+	line := m.Ascent + m.Descent
+	if err != nil || aerr != nil || adv <= 0 || line <= 0 {
+		return fixed.P(box.Min.X, cell.Min.Y+r.ascent), box, r.ppem
+	}
+	s := float64(fixed.I(box.Dx())) / float64(adv)
+	scaled := func(v fixed.Int26_6) fixed.Int26_6 { return fixed.Int26_6(float64(v) * s) }
+	dot = fixed.Point26_6{
+		X: fixed.I(box.Min.X) + (fixed.I(box.Dx())-scaled(adv))/2,
+		Y: fixed.I(box.Min.Y) + (fixed.I(box.Dy())-scaled(line))/2 + scaled(m.Ascent),
+	}
+	return dot, box, scaled(r.ppem)
 }
 
 // TakeDirty is the slots written since the last call, for the renderer to copy up.
@@ -271,14 +311,17 @@ type rasterizer struct {
 	gbuf   truetype.GlyphBuf
 }
 
-// draw composites gid onto dst with its pen (the baseline origin) at dot. fit, when not the
+// draw composites gid at ppem onto dst with its pen (the baseline origin) at dot. fit, when not the
 // zero rectangle, is a box the ink is shrunk into and centred in; clip is the hard boundary,
 // so nothing is scribbled over a neighbouring slot.
-func (r *rasterizer) draw(dst *image.Alpha, gid GID, dot fixed.Point26_6, fit, clip image.Rectangle) error {
+//
+// ppem is the face's own except for a wide glyph, which is never drawn from a hinted face at
+// any other: hinting is only parsed for the grid's own faces, and wide leaves those unscaled.
+func (r *rasterizer) draw(dst *image.Alpha, gid GID, ppem fixed.Int26_6, dot fixed.Point26_6, fit, clip image.Rectangle) error {
 	if r.hinted != nil {
 		return r.drawHinted(dst, gid, dot, clip)
 	}
-	segs, err := r.f.LoadGlyph(&r.buf, gid, r.ppem, nil)
+	segs, err := r.f.LoadGlyph(&r.buf, gid, ppem, nil)
 	if err != nil {
 		return err
 	}
@@ -551,6 +594,9 @@ func BakeAtlas(fm *FontManager, maxTexture int) (*Atlas, error) {
 		return nil, fmt.Errorf("bake atlas: empty glyph set")
 	}
 	padL, padT, padR, padB := glyphPadding(rs, fm.CellWidth, fm.CellHeight)
+	// A wide glyph reaches back a whole cell. The family's ligatures already ask for more
+	// than that, but a config font without them would leave no room for it.
+	padL = max(padL, fm.CellWidth)
 
 	a := &Atlas{
 		SlotW: fm.CellWidth + padL + padR,

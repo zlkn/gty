@@ -515,12 +515,25 @@ func (t *text) Layout(panes []*pane, focused *pane, runs []chrome) {
 			y := originY + float32(i)*cellH - float32(a.PadTop)
 			for col, gid := range gids {
 				cl := vte.CellAt(row.Cells, col)
+				// A wide character is drawn from its spacer, reaching back over its own
+				// cell, so the head draws nothing. The spacer stands in for it: the head's
+				// rune, glyph and colours, selected or under the cursor when the head is.
+				// A head the pane's edge clipped the spacer from is drawn narrow instead.
+				head := col
+				if cl.Attrs&vte.AttrWide != 0 && col+1 < len(gids) {
+					continue
+				}
+				if cl.Attrs&vte.AttrWideSpacer != 0 && col > 0 {
+					head = col - 1
+					cl, gid = vte.CellAt(row.Cells, head), gids[head]
+				}
 				// Resolve, not the gid alone: an uncovered rune shapes to 0, and the
 				// chain is where it is drawn from.
 				k := t.fm.Resolve(styleOf(cl), gid, cl.Rune)
+				k.Wide = head != col
 				u, v := a.Ensure(k)
 				c, _ := cellColors(cl)
-				if p.sel.contains(row.Seq, col) {
+				if p.sel.contains(row.Seq, head) {
 					c = foreground
 				}
 				if unfocused {
@@ -528,7 +541,7 @@ func (t *text) Layout(panes []*pane, focused *pane, runs []chrome) {
 					// darkening a background only makes it look like a hole.
 					c = dim(c)
 				}
-				if invert && i == curRow && col == curCol {
+				if invert && i == curRow && head == curCol {
 					c = backgroundRGBA
 				}
 				t.instances = append(t.instances, instance{

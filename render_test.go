@@ -963,3 +963,34 @@ func TestBlendSpaceKeepsColourSaturated(t *testing.T) {
 			gamTop, linTop)
 	}
 }
+
+// TestWideRuneDrawsFromItsSpacer: a wide character is one quad, laid at its second column and
+// reaching back over the first, and the cursor on its head inverts it and covers both columns.
+func TestWideRuneDrawsFromItsSpacer(t *testing.T) {
+	device, queue := newTestGPU(t)
+	txt := newTestText(t, device, queue)
+
+	p := gridPane(1, image.Rect(0, 0, 400, 100), 10, 1, "a中b")
+	placeCursor(p, 0, 1)
+
+	layout(txt, []*pane{p}, p, nil)
+	if p.count != 3 {
+		t.Fatalf("laid out %d quads for a, 中 and b; want 3, the head drawing nothing", p.count)
+	}
+	a, cellW := txt.fm.Atlas, float32(txt.fm.CellWidth)
+	wide := txt.instances[1]
+	if got, want := wide.rect[0], float32(px(padding))+2*cellW-float32(a.PadLeft); got != want {
+		t.Errorf("the wide quad starts at x=%v, want %v: laid at the spacer's column", got, want)
+	}
+	if got := wide.color; got != backgroundRGBA {
+		t.Errorf("the wide glyph under the cursor is %v, want the background %v", got, backgroundRGBA)
+	}
+	if got := txt.instances[2].color; got != foreground {
+		t.Errorf("the cell after the wide one is %v, want the plain foreground %v", got, foreground)
+	}
+
+	cell, ok := p.cursorCell(txt.fm.CellWidth, txt.fm.CellHeight)
+	if !ok || cell.Dx() != 2*txt.fm.CellWidth {
+		t.Errorf("the cursor on a wide character is %v, want two cells across", cell)
+	}
+}

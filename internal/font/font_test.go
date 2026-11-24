@@ -274,7 +274,7 @@ func TestResolveWalksTheFallbackChain(t *testing.T) {
 	if !ok {
 		t.Fatal("the family has no 'A'")
 	}
-	if got, want := fm.Resolve(Regular, gid, 'A'), (Key{Regular, gid}); got != want {
+	if got, want := fm.Resolve(Regular, gid, 'A'), (Key{Style: Regular, GID: gid}); got != want {
 		t.Errorf("Resolve(%v) = %v, want the shaper's own glyph untouched", want, got)
 	}
 	if finder.calls != 0 {
@@ -541,7 +541,7 @@ func TestNonIconRunesAreNotScaled(t *testing.T) {
 			t.Errorf("%q (%U): the family has no glyph", r, r)
 			continue
 		}
-		if got, want := fm.Resolve(Regular, gid, r), (Key{Regular, gid}); got != want {
+		if got, want := fm.Resolve(Regular, gid, r), (Key{Style: Regular, GID: gid}); got != want {
 			t.Errorf("%q (%U) resolved to %v, want %v untouched", r, r, got, want)
 		}
 	}

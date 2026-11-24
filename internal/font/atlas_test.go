@@ -102,7 +102,7 @@ func TestAtlasInkFitsSlot(t *testing.T) {
 		}
 		inked++
 		if !box.In(slotBox) {
-			t.Errorf("glyph %d: ink %v escapes its %v slot", gid, box, slotBox)
+			t.Errorf("glyph %v: ink %v escapes its %v slot", gid, box, slotBox)
 		}
 	}
 	if inked*2 <= len(a.Glyphs()) {
@@ -119,7 +119,7 @@ func TestEveryASCIIGlyphIsBaked(t *testing.T) {
 			t.Errorf("rune %q: no glyph", r)
 			continue
 		}
-		box, inked := slotInk(t, fm.Atlas, Key{Regular, gid})
+		box, inked := slotInk(t, fm.Atlas, Key{Style: Regular, GID: gid})
 		if r == ' ' {
 			if inked {
 				t.Errorf("the space carries ink at %v", box)
@@ -145,7 +145,7 @@ func TestSharedBaseline(t *testing.T) {
 			t.Errorf("rune %q: no glyph", r)
 			continue
 		}
-		box, inked := slotInk(t, fm.Atlas, Key{Regular, gid})
+		box, inked := slotInk(t, fm.Atlas, Key{Style: Regular, GID: gid})
 		if !inked {
 			t.Errorf("rune %q baked blank", r)
 			continue
@@ -215,12 +215,12 @@ func TestGlyphUVRoundTrip(t *testing.T) {
 	// which is very much baked.
 	unbaked := GID(fm.Font(Regular).NumGlyphs()) // out of range, always a miss
 	for gid := range GID(fm.Font(Regular).NumGlyphs()) {
-		if _, in := a.Slot(Key{Regular, gid}); !in {
+		if _, in := a.Slot(Key{Style: Regular, GID: gid}); !in {
 			unbaked = gid
 			break
 		}
 	}
-	if _, _, ok := a.GlyphUV(Key{Regular, unbaked}); ok {
+	if _, _, ok := a.GlyphUV(Key{Style: Regular, GID: unbaked}); ok {
 		t.Errorf("GlyphUV(%d) reports a hit for an unbaked glyph", unbaked)
 	}
 }
@@ -236,7 +236,7 @@ func TestAtlasBakesOnDemand(t *testing.T) {
 	if !ok {
 		t.Fatal("the face has no Cyrillic; pick another probe")
 	}
-	k := Key{Regular, gid}
+	k := Key{Style: Regular, GID: gid}
 
 	if _, in := a.Slot(k); in {
 		t.Fatal("Cyrillic was baked eagerly; this test proves nothing")
@@ -272,7 +272,7 @@ func TestAtlasNotdefBox(t *testing.T) {
 	fm := newTestManager(t)
 	a := fm.Atlas
 
-	u, v := a.Ensure(Key{Regular, 0})
+	u, v := a.Ensure(Key{Style: Regular, GID: 0})
 	slot := image.Rect(0, 0, a.SlotW, a.SlotH).
 		Add(image.Pt(int(u*float32(a.Img.Rect.Dx())+0.5), int(v*float32(a.Img.Rect.Dy())+0.5)))
 
@@ -307,7 +307,7 @@ func TestAtlasLazyInkFitsEverySlot(t *testing.T) {
 	}
 	for _, style := range faces {
 		for gid := range GID(fm.Font(style).NumGlyphs()) {
-			k := Key{style, gid}
+			k := Key{Style: style, GID: gid}
 			a.Ensure(k)
 			slot, in := a.Slot(k)
 			if !in {
@@ -334,7 +334,7 @@ func TestAtlasTracksDirtySlots(t *testing.T) {
 	}
 
 	gid, _ := fm.GlyphIndex(Regular, 'д')
-	a.Ensure(Key{Regular, gid})
+	a.Ensure(Key{Style: Regular, GID: gid})
 	if got := a.TakeDirty(); len(got) != 1 {
 		t.Errorf("one new glyph reported %d dirty slots, want 1", len(got))
 	}
@@ -349,7 +349,7 @@ func TestAtlasGrowsRows(t *testing.T) {
 	a := fm.Atlas
 
 	// A glyph baked before the sheet grows, to check it afterwards.
-	probe := Key{Regular, mustGlyph(t, fm, 'ж')}
+	probe := Key{Style: Regular, GID: mustGlyph(t, fm, 'ж')}
 	a.Ensure(probe)
 	slotBefore, _ := a.Slot(probe)
 	inkBefore, _ := inkBox(a.Img, slotBefore)
@@ -357,7 +357,7 @@ func TestAtlasGrowsRows(t *testing.T) {
 	startRows, startCols := a.Rows, a.Cols
 	free := a.Cols*a.Rows - len(a.Glyphs())
 	for gid := GID(1); gid < faceGlyphs(fm.Font(Regular)) && a.Rows == startRows; gid++ {
-		a.Ensure(Key{Regular, gid})
+		a.Ensure(Key{Style: Regular, GID: gid})
 	}
 	if a.Rows == startRows {
 		t.Fatalf("the face ran out before the sheet did: %d slots free of %d", free, a.Cols*a.Rows)
@@ -392,8 +392,8 @@ func TestAtlasStopsAtTheTextureLimit(t *testing.T) {
 	a.free = a.Cols * a.Rows
 
 	before := len(a.Glyphs())
-	u, v := a.Ensure(Key{Regular, mustGlyph(t, fm, 'ю')})
-	nu, nv := a.Ensure(Key{Regular, 0})
+	u, v := a.Ensure(Key{Style: Regular, GID: mustGlyph(t, fm, 'ю')})
+	nu, nv := a.Ensure(Key{Style: Regular, GID: 0})
 	if u != nu || v != nv {
 		t.Errorf("a glyph past the limit drew from %v,%v, want the replacement box at %v,%v", u, v, nu, nv)
 	}
@@ -438,7 +438,7 @@ func TestFallbackMatchesTheFamily(t *testing.T) {
 			t.Errorf("%U: the family has no glyph, so there is nothing to compare against", r)
 			continue
 		}
-		famKey := Key{Regular, fam}
+		famKey := Key{Style: Regular, GID: fam}
 		fb := fm.resolveFace(Regular, 0, r)
 		if fb == famKey || fb.GID == 0 {
 			t.Errorf("%U: the fallback has no glyph of its own for it", r)
@@ -500,8 +500,8 @@ func TestFallbackDingbatSitsInItsCell(t *testing.T) {
 	if !ok {
 		t.Fatal("the family has no ✓ U+2713 to compare against")
 	}
-	a.Ensure(Key{Regular, light})
-	want, inked := slotInk(t, a, Key{Regular, light})
+	a.Ensure(Key{Style: Regular, GID: light})
+	want, inked := slotInk(t, a, Key{Style: Regular, GID: light})
 	if !inked {
 		t.Fatal("the family baked ✓ blank")
 	}
@@ -539,7 +539,7 @@ func TestFitShrinksAWideGlyph(t *testing.T) {
 		t.Skip("no glyph in the face is wider than two cells")
 	}
 
-	k := Key{Fallback, wide}
+	k := Key{Style: Fallback, GID: wide}
 	a.Ensure(k)
 	box, inked := slotInk(t, a, k)
 	if !inked {
@@ -582,7 +582,7 @@ func TestIconsComeFromTheWideFace(t *testing.T) {
 		if !ok {
 			continue
 		}
-		plain, icon := Key{Regular, gid}, fm.Resolve(Regular, gid, r)
+		plain, icon := Key{Style: Regular, GID: gid}, fm.Resolve(Regular, gid, r)
 		if !fm.IconFace(icon.Style) {
 			t.Fatalf("%U came from %s, want the icon face", r, icon.Style)
 		}
@@ -645,9 +645,9 @@ func TestPowerlineIsNotScaled(t *testing.T) {
 			continue
 		}
 		key := fm.Resolve(Regular, gid, r)
-		if key != (Key{Regular, gid}) {
+		if key != (Key{Style: Regular, GID: gid}) {
 			t.Errorf("%U resolved to %v, want the family's own glyph %v untouched",
-				r, key, Key{Regular, gid})
+				r, key, Key{Style: Regular, GID: gid})
 			continue
 		}
 		a.Ensure(key)
@@ -680,7 +680,7 @@ func TestPowerlineWouldChangeInTheWideFace(t *testing.T) {
 	if !ok {
 		t.Fatal("the icon face has no branch symbol to compare against")
 	}
-	plain := Key{Regular, gid}
+	plain := Key{Style: Regular, GID: gid}
 	a.Ensure(plain)
 	a.Ensure(forced)
 
@@ -710,7 +710,7 @@ func TestWithoutAnIconFace(t *testing.T) {
 	if !ok {
 		t.Fatalf("the family has no %U", rune(testIcon))
 	}
-	if got, want := off.Resolve(Regular, gid, testIcon), (Key{Regular, gid}); got != want {
+	if got, want := off.Resolve(Regular, gid, testIcon), (Key{Style: Regular, GID: gid}); got != want {
 		t.Errorf("%U resolved to %v, want the family's own glyph %v", rune(testIcon), got, want)
 	}
 
@@ -723,4 +723,38 @@ func TestWithoutAnIconFace(t *testing.T) {
 	t.Logf("off: slot %dx%d padding R%d | on: slot %dx%d padding R%d",
 		off.Atlas.SlotW, off.Atlas.SlotH, off.Atlas.PadRight,
 		on.Atlas.SlotW, on.Atlas.SlotH, on.Atlas.PadRight)
+}
+
+// TestWideFillsTwoCells: a wide character is baked across the cell reached back into and the
+// slot's own, scaled up from the one cell a fitted face is sized to, and centred in the two.
+func TestWideFillsTwoCells(t *testing.T) {
+	o := testOptions(t)
+	o.Fallback = []Source{source(t, testFace[Regular])}
+	fm := newManager(t, o)
+	a := fm.Atlas
+	if a.PadLeft < fm.CellWidth {
+		t.Fatalf("PadLeft %d leaves no room to reach back a %d px cell", a.PadLeft, fm.CellWidth)
+	}
+
+	gid := mustGlyph(t, fm, 'M')
+	narrow, wide := Key{Style: Fallback, GID: gid}, Key{Style: Fallback, GID: gid, Wide: true}
+	a.Ensure(narrow)
+	a.Ensure(wide)
+	nbox, _ := slotInk(t, a, narrow)
+	wbox, inked := slotInk(t, a, wide)
+	if !inked {
+		t.Fatal("the wide glyph baked blank")
+	}
+
+	box := image.Rect(a.PadLeft-fm.CellWidth, a.PadTop, a.PadLeft+fm.CellWidth, a.PadTop+fm.CellHeight)
+	if !wbox.In(box) {
+		t.Errorf("wide ink %v is outside its two cells %v", wbox, box)
+	}
+	if wbox.Dx() <= nbox.Dx() {
+		t.Errorf("wide ink is %d px across, no wider than the narrow %d", wbox.Dx(), nbox.Dx())
+	}
+	if l, r := wbox.Min.X-box.Min.X, box.Max.X-wbox.Max.X; l-r > 2 || r-l > 2 {
+		t.Errorf("wide ink %v is off centre in %v: %d px left, %d right", wbox, box, l, r)
+	}
+	t.Logf("narrow %v, wide %v, two cells %v", nbox, wbox, box)
 }

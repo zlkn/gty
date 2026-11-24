@@ -115,7 +115,12 @@ func (p *pane) cursorCell(cellW, cellH int) (image.Rectangle, bool) {
 	pad := px(padding)
 	x := p.rect.Min.X + pad + col*cellW
 	y := p.rect.Min.Y + pad + row*cellH
-	return image.Rect(x, y, x+cellW, y+cellH), true
+	// On a wide character the cursor covers both its columns, as the glyph does.
+	w := cellW
+	if vte.CellAt(p.frame.Lines[row].Cells, col).Attrs&vte.AttrWide != 0 && col+1 < p.cols {
+		w *= 2
+	}
+	return image.Rect(x, y, x+w, y+cellH), true
 }
 
 // cellAt maps framebuffer px back to (row, col) inside the pane.
