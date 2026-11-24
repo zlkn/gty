@@ -9,6 +9,12 @@ const (
 	AttrUnderline
 	AttrInverse
 	AttrFaint
+
+	// AttrWide marks a character two cells across, and AttrWideSpacer the cell after it
+	// that it covers. The pair is kept whole by the screen: overwriting either half blanks
+	// the other, so a reader can trust a head to be followed by its spacer.
+	AttrWide
+	AttrWideSpacer
 )
 
 // Top byte (bits 24–31): Color type (kindDefault, kindPalette, or kindRGB).
@@ -46,7 +52,7 @@ type Cell struct {
 func (c Cell) Blank() bool {
 	return (c.Rune == 0 || c.Rune == ' ') &&
 		c.BG == ColorDefault &&
-		c.Attrs&(AttrInverse|AttrUnderline) == 0
+		c.Attrs&(AttrInverse|AttrUnderline|AttrWideSpacer) == 0
 }
 
 func (c Cell) Painted() bool { return c.BG != ColorDefault || c.Attrs&AttrInverse != 0 }

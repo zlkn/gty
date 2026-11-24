@@ -267,3 +267,133 @@ func TestScreenWideRunes(t *testing.T) {
 		t.Errorf("cursor at column %d, want %d: a rune is one Cell", s.curCol, len([]rune("héllo")))
 	}
 }
+
+func TestRuneWidth(t *testing.T) {
+	for _, tc := range []struct {
+		r    rune
+		want int
+	}{
+		{'a', 1}, {'│', 1}, {'…', 1}, {'é', 1},
+		{'🚨', 2}, {'中', 2},
+		{0x0301, 0}, {0xFE0F, 0}, {0x200D, 0},
+	} {
+		if got := runeWidth(tc.r); got != tc.want {
+			t.Errorf("width of %U is %d, want %d", tc.r, got, tc.want)
+		}
+	}
+}
+
+// TestScreenDoubleWidth is the table a program lays out counting 🚨 as two cells: the
+// border after it has to land where the program put it.
+func TestScreenDoubleWidth(t *testing.T) {
+	s, _ := testScreen(10, 1)
+	writeTo(s, "+1 🚨 |")
+
+	if got, want := screenText(s)[0], "+1 🚨 |"; got != want {
+		t.Errorf("screen reads %q, want %q", got, want)
+	}
+	if got := s.lines[0].Cells[6].Rune; got != '|' {
+		t.Errorf("column 6 holds %q, want the border", got)
+	}
+	if s.curCol != 7 {
+		t.Errorf("cursor at column %d, want 7", s.curCol)
+	}
+	head, spacer := s.lines[0].Cells[3], s.lines[0].Cells[4]
+	if head.Attrs&AttrWide == 0 || spacer.Attrs&AttrWideSpacer == 0 {
+		t.Errorf("cells 3 and 4 carry %b and %b, want a head and its spacer", head.Attrs, spacer.Attrs)
+	}
+}
+
+func TestScreenDoubleWidthWrapsWhole(t *testing.T) {
+	s, _ := testScreen(4, 2)
+	writeTo(s, "abc中")
+
+	if got, want := screenText(s), []string{"abc", "中"}; !slices.Equal(got, want) {
+		t.Errorf("screen reads %q, want %q", got, want)
+	}
+	if !s.lines[0].Wrapped {
+		t.Error("the line the wide rune did not fit on is not marked wrapped")
+	}
+	if s.curRow != 1 || s.curCol != 2 {
+		t.Errorf("cursor at row %d col %d, want row 1 col 2", s.curRow, s.curCol)
+	}
+}
+
+func TestScreenDoubleWidthFillsTheLastColumns(t *testing.T) {
+	s, _ := testScreen(4, 2)
+	writeTo(s, "ab中")
+
+	if !s.wrapNext || s.curRow != 0 {
+		t.Errorf("a wide rune ending in the last column left wrapNext %v on row %d; want a parked cursor",
+			s.wrapNext, s.curRow)
+	}
+	writeTo(s, "x")
+	if got, want := screenText(s), []string{"ab中", "x"}; !slices.Equal(got, want) {
+		t.Errorf("screen reads %q, want %q", got, want)
+	}
+}
+
+func TestScreenOverwritesHalfAWideRune(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		col  int
+		put  string
+		want string
+	}{
+		{"spacer", 2, "x", "a xb"},
+		{"head", 1, "x", "ax b"},
+		{"spacer with a wide rune", 2, "語", "a 語"},
+		{"head with a wide rune", 0, "語", "語 b"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, _ := testScreen(6, 1)
+			writeTo(s, "a中b")
+			s.moveTo(0, tc.col)
+			writeTo(s, tc.put)
+			if got := screenText(s)[0]; got != tc.want {
+				t.Errorf("screen reads %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestScreenEditsSplittingAWideRune(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		edit func(*screen)
+		want string
+	}{
+		{"delete at the spacer", func(s *screen) { s.moveTo(0, 2); s.deleteChars(1) }, "a b"},
+		{"insert at the spacer", func(s *screen) { s.moveTo(0, 2); s.insertChars(1) }, "a   b"},
+		{"erase the head", func(s *screen) { s.moveTo(0, 1); s.eraseChars(1) }, "a  b"},
+		{"erase to the spacer", func(s *screen) { s.moveTo(0, 2); s.eraseInLine(1) }, "   b"},
+		{"clip at the head", func(s *screen) { s.resize(2, 1) }, "a"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, _ := testScreen(6, 1)
+			writeTo(s, "a中b")
+			tc.edit(s)
+			if got := screenText(s)[0]; got != tc.want {
+				t.Errorf("screen reads %q, want %q", got, tc.want)
+			}
+			for i, c := range s.lines[0].Cells {
+				if c.Attrs&AttrWideSpacer != 0 && (i == 0 || s.lines[0].Cells[i-1].Attrs&AttrWide == 0) {
+					t.Errorf("column %d is a spacer with no head", i)
+				}
+			}
+		})
+	}
+}
+
+// TestScreenDropsZeroWidth: a cell holds one rune, and a combining mark given a column of
+// its own would push the rest of the line off where the program measured it.
+func TestScreenDropsZeroWidth(t *testing.T) {
+	s, _ := testScreen(6, 1)
+	writeTo(s, "éx")
+	if got, want := screenText(s)[0], "ex"; got != want {
+		t.Errorf("screen reads %q, want %q", got, want)
+	}
+	if s.curCol != 2 {
+		t.Errorf("cursor at column %d, want 2", s.curCol)
+	}
+}

@@ -137,9 +137,21 @@ func (s *screen) moveTo(row, col int) {
 func (s *screen) moveBy(rows, cols int) { s.moveTo(s.curRow+rows, s.curCol+cols) }
 
 // put writes r at the cursor and advances, spending a pending wrap first.
+//
+// A wide rune takes its cell and the one after it, which becomes its spacer. A zero-width
+// one — a combining mark, a joiner, a variation selector — is dropped: a cell holds one
+// rune, and giving it a column of its own would shift the rest of the line right of where
+// the program that measured it expects.
 func (s *screen) put(r rune) {
 	if s.cols == 0 || s.height() == 0 {
 		return
+	}
+	w := runeWidth(r)
+	if w == 0 {
+		return
+	}
+	if w == 2 && s.cols < 2 {
+		w = 1
 	}
 	if s.wrapNext {
 		if s.autowrap {
@@ -149,25 +161,74 @@ func (s *screen) put(r rune) {
 		}
 		s.wrapNext = false
 	}
+	if w == 2 && s.curCol == s.cols-1 {
+		// Half a character does not fit in the last column. With autowrap the column is
+		// left blank and the line wraps, as xterm does; without it there is nowhere to go
+		// but back a column, overwriting the cell before.
+		if s.autowrap {
+			s.unpair(s.curRow, s.curCol)
+			s.lines[s.curRow].Cells[s.curCol] = s.erased()
+			s.lines[s.curRow].Wrapped = true
+			s.curCol = 0
+			s.lineFeed()
+		} else {
+			s.curCol--
+		}
+	}
 	c := s.pen
 	c.Rune = r
 	if s.insert {
-		s.insertChars(1)
+		s.insertChars(w)
 	}
-	s.set(s.curRow, s.curCol, c)
+	l := &s.lines[s.curRow]
+	for i := range w {
+		s.unpair(s.curRow, s.curCol+i)
+	}
+	if w == 2 {
+		c.Attrs |= AttrWide
+		spacer := s.pen
+		spacer.Attrs |= AttrWideSpacer
+		l.Cells[s.curCol+1] = spacer
+	}
+	l.Cells[s.curCol] = c
+	l.touch()
 	s.last = r
-	if s.curCol+1 < s.cols {
-		s.curCol++
-	} else if s.autowrap {
-		s.wrapNext = true
+	if s.curCol+w < s.cols {
+		s.curCol += w
+	} else {
+		s.curCol = s.cols - 1
+		s.wrapNext = s.autowrap
 	}
 }
 
-// set writes one cell and bumps the row's version.
-func (s *screen) set(row, col int, c Cell) {
-	l := &s.lines[row]
-	l.Cells[col] = c
-	l.touch()
+// unpair blanks the other half of a wide character whose half at col is about to be
+// overwritten, so no head is left without its spacer or spacer without its head.
+func (s *screen) unpair(row, col int) {
+	cells := s.lines[row].Cells
+	switch c := cells[col]; {
+	case c.Attrs&AttrWideSpacer != 0 && col > 0:
+		cells[col-1] = s.erased()
+	case c.Attrs&AttrWide != 0 && col+1 < len(cells):
+		cells[col+1] = s.erased()
+	}
+}
+
+// repair blanks every half a wide character lost its other half to: a shift by ICH or DCH
+// can split a pair anywhere along the row.
+func (s *screen) repair(row int) {
+	cells := s.lines[row].Cells
+	for i := 0; i < len(cells); i++ {
+		switch c := cells[i]; {
+		case c.Attrs&AttrWide != 0:
+			if i+1 < len(cells) && cells[i+1].Attrs&AttrWideSpacer != 0 {
+				i++
+				continue
+			}
+			cells[i] = s.erased()
+		case c.Attrs&AttrWideSpacer != 0:
+			cells[i] = s.erased()
+		}
+	}
 }
 
 // lineFeed moves down a row, scrolling the region when the cursor is on its last line.
@@ -251,6 +312,7 @@ func (s *screen) insertChars(n int) {
 	n = min(n, s.cols-s.curCol)
 	copy(l.Cells[s.curCol+n:], l.Cells[s.curCol:])
 	s.fillRange(s.curRow, s.curCol, s.curCol+n)
+	s.repair(s.curRow)
 }
 
 func (s *screen) deleteChars(n int) {
@@ -261,6 +323,7 @@ func (s *screen) deleteChars(n int) {
 	n = min(n, s.cols-s.curCol)
 	copy(l.Cells[s.curCol:], l.Cells[s.curCol+n:])
 	s.fillRange(s.curRow, s.cols-n, s.cols)
+	s.repair(s.curRow)
 }
 
 func (s *screen) eraseChars(n int) { s.fillRange(s.curRow, s.curCol, s.curCol+n) }
@@ -312,8 +375,14 @@ func (s *screen) fillRange(row, from, to int) {
 	if to >= s.cols {
 		l.Wrapped = false
 	}
+	from, to = max(from, 0), min(to, len(l.Cells))
+	// Only the ends can cut a pair; whatever lies between is erased whole.
+	if from < to {
+		s.unpair(row, from)
+		s.unpair(row, to-1)
+	}
 	e := s.erased()
-	for i := max(from, 0); i < min(to, len(l.Cells)); i++ {
+	for i := from; i < to; i++ {
 		l.Cells[i] = e
 	}
 	l.touch()

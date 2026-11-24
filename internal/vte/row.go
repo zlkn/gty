@@ -49,13 +49,21 @@ func (r *Row) resizeTo(cols int) {
 		r.Cells = append(r.Cells, Cell{})
 	}
 	r.Cells = r.Cells[:cols]
+	// A wide character clipped at the new edge loses its spacer and goes with it.
+	if cols > 0 && r.Cells[cols-1].Attrs&AttrWide != 0 {
+		r.Cells[cols-1] = Cell{}
+	}
 	r.touch()
 }
 
-// String is the line's text, trailing blanks dropped and unwritten cells read as spaces.
+// String is the line's text, trailing blanks dropped, unwritten cells read as spaces and
+// the spacer behind a wide character skipped: it is the character's second column, not text.
 func (r Row) String() string {
 	var b strings.Builder
 	for _, c := range TrimBlanks(r.Cells) {
+		if c.Attrs&AttrWideSpacer != 0 {
+			continue
+		}
 		if c.Rune == 0 {
 			b.WriteRune(' ')
 			continue
