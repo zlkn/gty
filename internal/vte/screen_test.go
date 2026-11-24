@@ -368,6 +368,9 @@ func TestScreenEditsSplittingAWideRune(t *testing.T) {
 		{"erase the head", func(s *screen) { s.moveTo(0, 1); s.eraseChars(1) }, "a  b"},
 		{"erase to the spacer", func(s *screen) { s.moveTo(0, 2); s.eraseInLine(1) }, "   b"},
 		{"clip at the head", func(s *screen) { s.resize(2, 1) }, "a"},
+		{"insert at the head", func(s *screen) { s.moveTo(0, 1); s.insertChars(1) }, "a 中b"},
+		{"delete before it", func(s *screen) { s.moveTo(0, 0); s.deleteChars(1) }, "中b"},
+		{"insert-mode put at the head", func(s *screen) { s.moveTo(0, 1); s.insert = true; s.put('x') }, "ax中b"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s, _ := testScreen(6, 1)
@@ -387,6 +390,18 @@ func TestScreenEditsSplittingAWideRune(t *testing.T) {
 
 // TestScreenDropsZeroWidth: a cell holds one rune, and a combining mark given a column of
 // its own would push the rest of the line off where the program measured it.
+// TestScreenDeleteKeepsAWideRuneAtTheEnd: DCH shifts a pair off the last two columns, and the
+// stale copy left in the last one must not pass for its spacer.
+func TestScreenDeleteKeepsAWideRuneAtTheEnd(t *testing.T) {
+	s, _ := testScreen(6, 1)
+	writeTo(s, "abcd中")
+	s.moveTo(0, 0)
+	s.deleteChars(1)
+	if got, want := screenText(s)[0], "bcd中"; got != want {
+		t.Errorf("screen reads %q, want %q", got, want)
+	}
+}
+
 func TestScreenDropsZeroWidth(t *testing.T) {
 	s, _ := testScreen(6, 1)
 	writeTo(s, "éx")

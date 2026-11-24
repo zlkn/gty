@@ -403,6 +403,9 @@ func (t *Terminal) Text(from, to Pos, block bool) string {
 		var line []rune
 		for c := c0; c < c1; c++ {
 			cl := CellAt(row.Cells, c)
+			if cl.Attrs&AttrWideSpacer != 0 {
+				continue // the second column of the character before it, not a space
+			}
 			if cl.Rune == 0 {
 				line = append(line, ' ')
 			} else {

@@ -62,6 +62,16 @@ func TestTerminalText(t *testing.T) {
 	}
 }
 
+// TestTerminalTextWide: a wide character copies as itself, not followed by a space for the
+// column it covers.
+func TestTerminalTextWide(t *testing.T) {
+	tm := gridTerm(10, 1, "a中文b")
+	seq := tm.Frame(nil, 0).Lines[0].Seq
+	if got, want := tm.Text(Pos{Seq: seq, Col: 0}, Pos{Seq: seq, Col: 6}, false), "a中文b"; got != want {
+		t.Errorf("Text = %q, want %q", got, want)
+	}
+}
+
 func TestTerminalTextScrollbackRagged(t *testing.T) {
 	// A small terminal where lines retire into scrollback.
 	// Scrollback rows are stored TrimBlanks-shortened, so row.Cells is ragged.

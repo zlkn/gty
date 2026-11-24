@@ -169,6 +169,7 @@ func (s *screen) put(r rune) {
 			s.unpair(s.curRow, s.curCol)
 			s.lines[s.curRow].Cells[s.curCol] = s.erased()
 			s.lines[s.curRow].Wrapped = true
+			s.lines[s.curRow].touch()
 			s.curCol = 0
 			s.lineFeed()
 		} else {
@@ -311,7 +312,7 @@ func (s *screen) insertChars(n int) {
 	l := &s.lines[s.curRow]
 	n = min(n, s.cols-s.curCol)
 	copy(l.Cells[s.curCol+n:], l.Cells[s.curCol:])
-	s.fillRange(s.curRow, s.curCol, s.curCol+n)
+	s.blank(s.curRow, s.curCol, s.curCol+n)
 	s.repair(s.curRow)
 }
 
@@ -322,7 +323,7 @@ func (s *screen) deleteChars(n int) {
 	l := &s.lines[s.curRow]
 	n = min(n, s.cols-s.curCol)
 	copy(l.Cells[s.curCol:], l.Cells[s.curCol+n:])
-	s.fillRange(s.curRow, s.cols-n, s.cols)
+	s.blank(s.curRow, s.cols-n, s.cols)
 	s.repair(s.curRow)
 }
 
@@ -371,16 +372,23 @@ func (s *screen) eraseInDisplay(mode int) {
 }
 
 func (s *screen) fillRange(row, from, to int) {
+	// Only the ends can cut a pair; whatever lies between is erased whole.
+	if f, t := max(from, 0), min(to, len(s.lines[row].Cells)); f < t {
+		s.unpair(row, f)
+		s.unpair(row, t-1)
+	}
+	s.blank(row, from, to)
+}
+
+// blank erases cells without looking at what they held. ICH and DCH erase the cells a shift
+// left behind, which still hold copies of the ones that moved: unpairing those would erase
+// the moved character's other half. Their caller repairs the row instead.
+func (s *screen) blank(row, from, to int) {
 	l := &s.lines[row]
 	if to >= s.cols {
 		l.Wrapped = false
 	}
 	from, to = max(from, 0), min(to, len(l.Cells))
-	// Only the ends can cut a pair; whatever lies between is erased whole.
-	if from < to {
-		s.unpair(row, from)
-		s.unpair(row, to-1)
-	}
 	e := s.erased()
 	for i := from; i < to; i++ {
 		l.Cells[i] = e

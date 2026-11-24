@@ -133,18 +133,27 @@ func wordAt(cells []vte.Cell, col, cols int) (from, to int) {
 		return 0, 0
 	}
 	col = min(max(col, 0), cols-1)
-	cls := runeClass(vte.CellAt(cells, col).Rune)
+	cls := runeClass(runeAt(cells, col))
 
 	from = col
-	for from > 0 && runeClass(vte.CellAt(cells, from-1).Rune) == cls {
+	for from > 0 && runeClass(runeAt(cells, from-1)) == cls {
 		from--
 	}
 
 	to = col + 1
-	for to < cols && runeClass(vte.CellAt(cells, to).Rune) == cls {
+	for to < cols && runeClass(runeAt(cells, to)) == cls {
 		to++
 	}
 	return from, to
+}
+
+// runeAt is the rune drawn at col: a wide character's spacer holds none, and would read as a
+// space that splits a word of ideographs into single characters.
+func runeAt(cells []vte.Cell, col int) rune {
+	if c := vte.CellAt(cells, col); c.Attrs&vte.AttrWideSpacer != 0 && col > 0 {
+		return vte.CellAt(cells, col-1).Rune
+	}
+	return vte.CellAt(cells, col).Rune
 }
 
 type clickTracker struct {

@@ -330,3 +330,16 @@ func TestSetGridClearsSelection(t *testing.T) {
 		t.Errorf("setGrid should preserve active selection when dragging")
 	}
 }
+
+// TestWordAtWide: the spacer behind an ideograph is not a space, so a word of them selects whole.
+func TestWordAtWide(t *testing.T) {
+	cells := []vte.Cell{
+		{Rune: ' '},
+		{Rune: '中', Attrs: vte.AttrWide}, {Attrs: vte.AttrWideSpacer},
+		{Rune: '文', Attrs: vte.AttrWide}, {Attrs: vte.AttrWideSpacer},
+		{Rune: ' '},
+	}
+	if from, to := wordAt(cells, 2, len(cells)); from != 1 || to != 5 {
+		t.Errorf("wordAt(中文) = [%d, %d), want [1, 5)", from, to)
+	}
+}
