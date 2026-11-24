@@ -388,6 +388,45 @@ func TestScreenEditsSplittingAWideRune(t *testing.T) {
 	}
 }
 
+// TestScreenEmojiSequences: a sequence programs measure as one emoji takes two cells and
+// keeps its first rune; the rest of it is not stored.
+func TestScreenEmojiSequences(t *testing.T) {
+	for _, tc := range []struct {
+		name, in, want string
+		col            int
+	}{
+		{"emoji style", "a⚠\uFE0F|", "a⚠|", 3},
+		{"emoji style on a wide rune", "a🚨\uFE0F|", "a🚨|", 3},
+		{"skin tone", "a👍\U0001F3FD|", "a👍|", 3},
+		{"joined", "a👨\u200D👩\u200D👧|", "a👨|", 3},
+		{"flag", "a🇷🇺|", "a🇷|", 3},
+		{"two flags", "🇷🇺🇺🇦|", "🇷🇺|", 4},
+		{"keycap", "1\uFE0F\u20E3|", "1|", 2},
+		{"joiner after text", "a\u200Db|", "ab|", 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, _ := testScreen(10, 1)
+			writeTo(s, tc.in)
+			if got := screenText(s)[0]; got != tc.want {
+				t.Errorf("screen reads %q, want %q", got, tc.want)
+			}
+			if got := s.lines[0].Cells[tc.col].Rune; got != '|' {
+				t.Errorf("column %d holds %q, want the border", tc.col, got)
+			}
+		})
+	}
+}
+
+// TestScreenEmojiStyleAtTheMargin: VS16 on a character in the last column cannot widen it
+// without moving it to the next line, so it stays narrow.
+func TestScreenEmojiStyleAtTheMargin(t *testing.T) {
+	s, _ := testScreen(3, 2)
+	writeTo(s, "ab⚠\uFE0Fx")
+	if got, want := screenText(s), []string{"ab⚠", "x"}; !slices.Equal(got, want) {
+		t.Errorf("screen reads %q, want %q", got, want)
+	}
+}
+
 // TestScreenDropsZeroWidth: a cell holds one rune, and a combining mark given a column of
 // its own would push the rest of the line off where the program measured it.
 // TestScreenDeleteKeepsAWideRuneAtTheEnd: DCH shifts a pair off the last two columns, and the

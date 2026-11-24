@@ -53,6 +53,12 @@ type screen struct {
 	// last is the rune REP repeats. Only printing sets it, and moving the cursor clears
 	// it: a repeat reaching across a control sequence would copy the wrong character.
 	last rune
+
+	// lastRow and lastCol are where last was written, so the runes that extend it — a
+	// variation selector, a skin tone, the rest of a joined emoji — can find it. joining is
+	// set by a zero-width joiner: the next emoji is part of the one before it.
+	lastRow, lastCol int
+	joining          bool
 }
 
 func newScreen(cols, rows int, out *scrollback) *screen {
@@ -146,6 +152,9 @@ func (s *screen) put(r rune) {
 	if s.cols == 0 || s.height() == 0 {
 		return
 	}
+	if s.extend(r) {
+		return
+	}
 	w := runeWidth(r)
 	if w == 0 {
 		return
@@ -193,9 +202,81 @@ func (s *screen) put(r rune) {
 	}
 	l.Cells[s.curCol] = c
 	l.touch()
-	s.last = r
+	s.last, s.lastRow, s.lastCol = r, s.curRow, s.curCol
 	if s.curCol+w < s.cols {
 		s.curCol += w
+	} else {
+		s.curCol = s.cols - 1
+		s.wrapNext = s.autowrap
+	}
+}
+
+// The runes that build one emoji out of several. Programs measure the whole sequence as one
+// character two cells across, so the grid has to as well.
+const (
+	zwj        = 0x200D
+	emojiStyle = 0xFE0F // VS16: the character before it is drawn as an emoji
+	skinToneLo = 0x1F3FB
+	skinToneHi = 0x1F3FF
+	regionalLo = 0x1F1E6 // a flag is two regional indicators
+	regionalHi = 0x1F1FF
+)
+
+func regional(r rune) bool { return r >= regionalLo && r <= regionalHi }
+
+// extend folds r into the character written just before it, when r continues it rather than
+// starting a new one. A cell holds one rune, so the continuation itself is not kept: the
+// character is drawn and copied as its first rune, at the width of the whole sequence.
+//
+// Only straight after a print: a cursor move clears last, and what follows it is a new
+// character wherever it lands.
+func (s *screen) extend(r rune) bool {
+	joining := s.joining
+	s.joining = false
+	// A resize or a line edit can move the grid without a print; the cell has to still be
+	// the one written.
+	if s.last == 0 || s.lastRow >= s.height() || s.lastCol >= s.cols ||
+		s.lines[s.lastRow].Cells[s.lastCol].Rune != s.last {
+		return false
+	}
+	head := s.lines[s.lastRow].Cells[s.lastCol]
+	wide := head.Attrs&AttrWide != 0
+	switch {
+	case r == zwj:
+		s.joining = wide
+		return true
+	case r == emojiStyle:
+		s.widen()
+		return true
+	case joining && wide, r >= skinToneLo && r <= skinToneHi && wide:
+		return true
+	case regional(r) && regional(s.last) && !wide:
+		s.widen()
+		return true
+	}
+	return false
+}
+
+// widen turns the narrow character just written into a wide one, taking the cell after it
+// as its spacer, which is what VS16 and a second regional indicator ask for. Not at the
+// right margin: the character is already there with the wrap pending, and moving it to the
+// next line would rewrite what the program already drew.
+func (s *screen) widen() {
+	row, col := s.lastRow, s.lastCol
+	l := &s.lines[row]
+	head := l.Cells[col]
+	if head.Attrs&AttrWide != 0 || col+1 >= s.cols || s.wrapNext || s.curCol != col+1 {
+		return
+	}
+	s.unpair(row, col+1)
+	spacer := head
+	spacer.Rune = 0
+	spacer.Attrs |= AttrWideSpacer
+	l.Cells[col].Attrs |= AttrWide
+	l.Cells[col+1] = spacer
+	l.touch()
+	if col+2 < s.cols {
+		s.curCol = col + 2
 	} else {
 		s.curCol = s.cols - 1
 		s.wrapNext = s.autowrap
